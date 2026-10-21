@@ -1,20 +1,29 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { isWebSerialSupported } from '../protocol/transports/webserial.ts'
+import { MessagesView } from './MessagesView.tsx'
 import { Button } from './parts.tsx'
 import { Shell, type ShellHandle } from './Shell.tsx'
+import { useMessages } from './useMessages.ts'
 import { useRadio } from './useRadio.ts'
-import { Channels, Contacts, Overview, Packets, Settings } from './views.tsx'
+import { Channels, Contacts, driftText, Overview, Packets, Settings } from './views.tsx'
 
-type Tab = 'overview' | 'settings' | 'contacts' | 'channels' | 'packets'
+type Tab = 'overview' | 'messages' | 'settings' | 'contacts' | 'channels' | 'packets'
 
 export function App() {
   const radio = useRadio()
   const { state } = radio
+  const msgs = useMessages(radio.client, state.self?.publicKey, state.contacts, state.channels)
+  const [clockDismissed, setClockDismissed] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
   const shell = useRef<ShellHandle>(null)
   const [dockHeight, setDockHeight] = useState(300)
   const connected = state.status === 'connected'
   const webSerial = isWebSerialSupported()
+  const drift = state.clock ? Math.round(state.clock.radio - state.clock.local) : 0
+
+  useEffect(() => {
+    document.title = msgs.unreadTotal ? `(${msgs.unreadTotal}) MeshCore Console` : 'MeshCore Console'
+  }, [msgs.unreadTotal])
 
   const startDrag = useCallback(
     (e: React.PointerEvent) => {
@@ -33,6 +42,7 @@ export function App() {
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
+    { id: 'messages', label: msgs.unreadTotal ? `Messages · ${msgs.unreadTotal} new` : 'Messages' },
     { id: 'settings', label: 'Settings' },
     { id: 'contacts', label: `Contacts${state.contacts ? ` · ${state.contacts.length}` : ''}` },
     { id: 'channels', label: `Channels${state.channels ? ` · ${state.channels.length}` : ''}` },
@@ -69,10 +79,11 @@ export function App() {
           <button className="banner-close" onClick={radio.clearError}>×</button>
         </div>
       )}
-      {state.messagesWaiting && (
+      {connected && drift < -60 && !clockDismissed && (
         <div className="banner">
-          The radio has messages waiting. Message sync isn’t built yet; they stay queued on the radio.
-          <button className="banner-close" onClick={radio.clearMessagesWaiting}>×</button>
+          The radio’s clock is {driftText(drift)}. Messages and adverts carry its timestamps.
+          <Button kind="small" onClick={() => void radio.syncClock().catch(() => {})}>sync clock</Button>
+          <button className="banner-close" onClick={() => setClockDismissed(true)}>×</button>
         </div>
       )}
 
@@ -92,8 +103,9 @@ export function App() {
               <Button kind="small" onClick={radio.refreshStatus} disabled={!connected}>refresh</Button>
             </nav>
             <main className="view">
-              {tab === 'overview' && <Overview state={state} />}
-              {tab === 'settings' && <Settings state={state} onEdit={(cmd) => shell.current?.prefill(cmd)} onRefresh={radio.refreshSettings} />}
+              {tab === 'overview' && <Overview state={state} onSyncClock={radio.syncClock} />}
+              {tab === 'messages' && <MessagesView msgs={msgs} connected={connected} nodeName={state.self?.name} />}
+              {tab === 'settings' && <Settings state={state} write={radio.write} onRefresh={radio.refreshSettings} />}
               {tab === 'contacts' && <Contacts state={state} onRefresh={radio.refreshContacts} />}
               {tab === 'channels' && <Channels state={state} onRefresh={radio.refreshChannels} />}
               {tab === 'packets' && <Packets state={state} onClear={radio.clearRx} />}

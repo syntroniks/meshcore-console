@@ -86,3 +86,50 @@ code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px
 .dock { display: flex; flex-direction: column; border-top: 1px solid var(--border); background: #0b0e12; min-height: 120px; }
 .dock-handle { display: flex; gap: 12px; align-items: center; padding: 4px 12px; cursor: ns-resize; user-select: none; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; }
 .shell { flex: 1; min-height: 0; padding: 4px 8px; }
+
+/* settings editors */
+.row-editing { grid-template-columns: 150px 1fr; }
+.editor { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.editor-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.editor input, .editor select, .composer input {
+  font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+}
+.editor input:focus, .editor select:focus, .composer input:focus { outline: none; border-color: var(--accent); }
+.editor input[type='text'] { min-width: 220px; }
+.editor input[type='number'] { width: 120px; }
+.editor-error { color: var(--err); font-size: 12.5px; }
+.flags { display: flex; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+.flags label { display: inline-flex; gap: 5px; align-items: center; }
+.row-action { display: flex; gap: 6px; }
+
+/* messages */
+.messages { display: grid; grid-template-columns: 260px 1fr; height: 100%; min-height: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.view:has(.messages) { padding: 14px; display: flex; flex-direction: column; }
+.view:has(.messages) .messages { flex: 1; }
+.conv-list { border-right: 1px solid var(--border); overflow-y: auto; padding: 6px 0; }
+.conv-section { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); padding: 10px 14px 4px; }
+.conv { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; width: 100%; text-align: left; font: inherit; background: none; border: 0; color: var(--text); padding: 7px 14px; cursor: pointer; }
+.conv:hover { background: #1a2028; }
+.conv-active { background: var(--panel-2); }
+.conv-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-preview { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-empty { padding: 0 14px; }
+.conv-error { color: var(--err); font-size: 12px; padding: 6px 14px; }
+.badge { background: var(--accent); color: #06201d; font-size: 11px; font-weight: 700; border-radius: 9px; padding: 1px 7px; align-self: center; }
+
+.thread { display: flex; flex-direction: column; min-height: 0; }
+.thread-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.thread-title { font-weight: 600; }
+.thread-list { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.bubble { max-width: 72%; padding: 7px 11px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); }
+.bubble-in { align-self: flex-start; border-bottom-left-radius: 3px; }
+.bubble-out { align-self: flex-end; background: #143a36; border-color: #1f5650; border-bottom-right-radius: 3px; }
+.bubble-failed { border-color: var(--err); }
+.bubble-from { font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+.bubble-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-meta { font-size: 11.5px; color: var(--muted); margin-top: 3px; display: flex; gap: 8px; }
+.link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
+.composer { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--border); }
+.composer input { flex: 1; padding: 7px 10px; }
+.count { font-size: 12px; color: var(--muted); min-width: 52px; text-align: right; }
+.count-over { color: var(--err); }

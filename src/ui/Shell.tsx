@@ -165,6 +165,13 @@ export function Shell({ client, nodeName, ref }: Props) {
           out(`radio clock ${new Date(t0 * 1000).toISOString()}  ${drift === 0 ? C.ok('in sync') : C.warn(`${drift > 0 ? '+' : ''}${drift}s vs this computer`)}`)
           return
         }
+        case 'synctime': {
+          const cl = needClient()
+          const before = (await cl.getDeviceTime()) - Math.round(Date.now() / 1000)
+          await cl.setDeviceTime()
+          out(C.ok(`radio clock set from this computer (was ${before > 0 ? '+' : ''}${before}s)`))
+          return
+        }
         case 'rx':
         case 'frames': {
           const on = arg === undefined ? !flags.current[cmd] : arg === 'on'
@@ -207,7 +214,9 @@ export function Shell({ client, nodeName, ref }: Props) {
           const p = e.packet
           editor.print(C.dim(`[rx] ${p ? `${p.payloadName} via ${p.routeName}, ${p.hops} hops, ${p.payloadLength}B` : 'unparsed'}  rssi ${e.rssi} snr ${e.snr}`))
         } else if (f[0] === Push.MsgWaiting) {
-          editor.print(C.warn('[radio] message waiting (message sync is not built yet)'))
+          editor.print(C.dim('[radio] new message, synced to the Messages tab'))
+        } else if (f[0] === Push.SendConfirmed) {
+          editor.print(C.dim('[radio] message delivered (ACK)'))
         } else {
           editor.print(C.dim(`[radio] ${PUSH_NAMES[f[0]] ?? `push 0x${f[0].toString(16)}`}`))
         }

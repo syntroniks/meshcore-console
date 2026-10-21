@@ -60,6 +60,7 @@ export const LOCAL_COMMANDS: CommandHelp[] = [
   { usage: '/contacts', summary: 'list contacts' },
   { usage: '/channels', summary: 'list channels' },
   { usage: '/time', summary: "radio clock and its drift from this computer's clock" },
+  { usage: '/synctime', summary: "set the radio's clock from this computer (forward only)" },
   { usage: '/rx on|off', summary: 'print received packets as they arrive' },
   { usage: '/frames on|off', summary: 'print every frame to and from the radio, in hex' },
 ]

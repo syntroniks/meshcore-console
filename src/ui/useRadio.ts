@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { MeshCoreClient, type Transport } from '../protocol/client.ts'
-import { Push } from '../protocol/codes.ts'
+import { MeshCoreClient, MeshCoreError, type Transport } from '../protocol/client.ts'
+import { ErrCode, Push } from '../protocol/codes.ts'
 import {
   parseRxLog,
   type AutoaddConfig,
@@ -27,8 +27,6 @@ export const CLI_SETTINGS: { key: string; label: string }[] = [
   { key: 'agc.reset.interval', label: 'AGC reset interval (s)' },
   { key: 'int.thresh', label: 'Interference threshold (dB)' },
   { key: 'cad', label: 'Channel activity detection' },
-  { key: 'multi.acks', label: 'Extra ACKs' },
-  { key: 'path.hash.mode', label: 'Path hash mode' },
   { key: 'radio.rxgain', label: 'Boosted RX gain' },
   { key: 'radio.fem.rxgain', label: 'External LNA' },
   { key: 'tz.offset', label: 'Clock UTC offset' },
@@ -59,7 +57,6 @@ export interface RadioState {
   floodScope?: FloodScope | null
   cli: Record<string, string | null>
   rx: RxEvent[]
-  messagesWaiting: boolean
   updatedAt?: number
 }
 
@@ -68,7 +65,7 @@ const CONTACT_PUSHES = new Set<number>([Push.NewAdvert, Push.Advert, Push.PathUp
 const RX_LOG_MAX = 500
 const POLL_MS = 15000
 
-const initial: RadioState = { status: 'disconnected', cli: {}, rx: [], messagesWaiting: false }
+const initial: RadioState = { status: 'disconnected', cli: {}, rx: [] }
 
 export function useRadio() {
   const [state, setState] = useState<RadioState>(initial)
@@ -98,6 +95,7 @@ export function useRadio() {
   const refreshSettings = useCallback(async () => {
     const c = clientRef.current
     if (!c?.isOpen) return
+    const device = await c.deviceQuery()
     const self = await c.appStart()
     const customVars = await c.getCustomVars()
     const tuning = await c.getTuningParams()
@@ -105,8 +103,33 @@ export function useRadio() {
     const floodScope = await c.getDefaultFloodScope()
     const cli: Record<string, string | null> = {}
     for (const { key } of CLI_SETTINGS) cli[key] = await c.runCli(`get ${key}`)
-    patch({ self, customVars, tuning, autoadd, floodScope, cli })
+    patch({ device, self, customVars, tuning, autoadd, floodScope, cli })
   }, [patch])
+
+  /** Run a settings write, then re-read settings so the UI shows what the radio actually stored. */
+  const write = useCallback(
+    async (fn: (c: MeshCoreClient) => Promise<unknown>) => {
+      const c = clientRef.current
+      if (!c?.isOpen) throw new Error('not connected')
+      await fn(c)
+      await refreshSettings()
+    },
+    [refreshSettings],
+  )
+
+  const syncClock = useCallback(async () => {
+    const c = clientRef.current
+    if (!c?.isOpen) throw new Error('not connected')
+    try {
+      await c.setDeviceTime(Math.floor(Date.now() / 1000))
+    } catch (err) {
+      if (err instanceof MeshCoreError && err.code === ErrCode.IllegalArg) {
+        throw new Error('the radio refused: its clock is ahead, and the firmware only moves it forward')
+      }
+      throw err
+    }
+    await refreshStatus()
+  }, [refreshStatus])
 
   const refreshChannels = useCallback(async () => {
     const c = clientRef.current
@@ -126,8 +149,6 @@ export function useRadio() {
           if (f[0] === Push.LogRxData) {
             const entry: RxEvent = { ...parseRxLog(f), at: Date.now() }
             setState((s) => ({ ...s, rx: [entry, ...s.rx].slice(0, RX_LOG_MAX) }))
-          } else if (f[0] === Push.MsgWaiting) {
-            patch({ messagesWaiting: true })
           } else if (CONTACT_PUSHES.has(f[0])) {
             void refreshContacts().catch(() => {})
           }
@@ -162,7 +183,7 @@ export function useRadio() {
   )
 
   const connectSerial = useCallback(() => connect(() => WebSerialTransport.request()), [connect])
-  const connectDemo = useCallback(() => connect(async () => new MockRadioTransport({ rxLog: true })), [connect])
+  const connectDemo = useCallback(() => connect(async () => new MockRadioTransport({ rxLog: true, chatter: true, queuedMessages: 3, clockBehindSecs: 7200 })), [connect])
 
   const disconnect = useCallback(async () => {
     await clientRef.current?.disconnect()
@@ -188,11 +209,12 @@ export function useRadio() {
     connectDemo,
     disconnect,
     clearError: () => patch({ error: undefined }),
-    clearMessagesWaiting: () => patch({ messagesWaiting: false }),
     clearRx: () => patch({ rx: [] }),
     refreshStatus: run(refreshStatus),
     refreshContacts: run(refreshContacts),
     refreshSettings: run(refreshSettings),
     refreshChannels: run(refreshChannels),
+    write,
+    syncClock,
   }
 }
