@@ -1,8 +1,8 @@
 // Typed views of companion protocol frames. Each parser follows the firmware's memcpy order for that
 // reply (examples/companion_radio/MyMesh.cpp, v1.18.0); frame[0] is always the response or push code.
 
-import { ByteReader, ByteWriter, toHex } from './bytes.ts'
-import { Cmd, OUT_PATH_UNKNOWN, PAYLOAD_TYPE_NAMES, ROUTE_TYPE_NAMES } from './codes.ts'
+import { ByteReader, ByteWriter, fromHex, toHex } from './bytes.ts'
+import { Cmd, OUT_PATH_UNKNOWN, PAYLOAD_TYPE_NAMES, Resp, ROUTE_TYPE_NAMES, TxtType } from './codes.ts'
 
 export interface DeviceInfo {
   protocolVersion: number
@@ -127,6 +127,39 @@ export interface RxLogEntry {
   rssi: number
   raw: Uint8Array
   packet?: DecodedPacket // undefined if the raw bytes don't parse
+}
+
+/** A message popped off the radio's offline queue with CMD_SYNC_NEXT_MESSAGE. */
+export interface IncomingMessage {
+  kind: 'direct' | 'channel' | 'channel-data'
+  snr?: number // dB; only in the v3+ formats
+  senderPrefix?: string // direct: first 6 bytes of the sender's public key, hex
+  channelIndex?: number
+  hops: number | null // null when it arrived by a direct route
+  txtType: number
+  senderTimestamp: number // unix secs, sender's clock
+  authorPrefix?: string // signed posts (room servers): first 4 bytes of the original author's key
+  text: string
+  dataType?: number // channel-data only
+  data?: Uint8Array
+}
+
+export interface SentInfo {
+  flood: boolean
+  expectedAck: number // matches PUSH_CODE_SEND_CONFIRMED; 0 = none expected
+  timeoutMs: number // radio's estimate of how long the ACK may take
+}
+
+export interface SendConfirmed {
+  ack: number
+  tripMs: number
+}
+
+export interface OtherParams {
+  manualAddContacts: number
+  telemetry: { base: number; location: number; environment: number }
+  advertLocationPolicy: number
+  multiAcks: number
 }
 
 // ---- parsers -------------------------------------------------------------------------------------
@@ -282,6 +315,63 @@ export function parseErrCode(f: Uint8Array): number | undefined {
   return f.length > 1 ? f[1] : undefined
 }
 
+const hopsOf = (pathLen: number) => (pathLen === 0xff ? null : pathLen & 63)
+
+/**
+ * Offline queue entries (MyMesh::queueMessage / onChannelMessageRecv / onChannelDataRecv). The v3 formats,
+ * sent when the app announces protocol 3+, add SNR and two reserved bytes after the code.
+ */
+export function parseIncomingMessage(f: Uint8Array): IncomingMessage {
+  const code = f[0]
+  const r = new ByteReader(f, 1)
+  const v3 = code === Resp.ContactMsgRecvV3 || code === Resp.ChannelMsgRecvV3 || code === Resp.ChannelDataRecv
+  let snr: number | undefined
+  if (v3) {
+    snr = r.i8() / 4
+    r.u16() // reserved
+  }
+  if (code === Resp.ContactMsgRecv || code === Resp.ContactMsgRecvV3) {
+    const senderPrefix = toHex(r.take(6))
+    const hops = hopsOf(r.u8())
+    const txtType = r.u8()
+    const senderTimestamp = r.u32()
+    const authorPrefix = txtType === TxtType.SignedPlain ? toHex(r.take(4)) : undefined
+    return { kind: 'direct', snr, senderPrefix, hops, txtType, senderTimestamp, authorPrefix, text: r.restString() }
+  }
+  if (code === Resp.ChannelMsgRecv || code === Resp.ChannelMsgRecvV3) {
+    const channelIndex = r.u8()
+    const hops = hopsOf(r.u8())
+    const txtType = r.u8()
+    const senderTimestamp = r.u32()
+    return { kind: 'channel', snr, channelIndex, hops, txtType, senderTimestamp, text: r.restString() }
+  }
+  if (code === Resp.ChannelDataRecv) {
+    const channelIndex = r.u8()
+    const hops = hopsOf(r.u8())
+    const dataType = r.u16()
+    const len = r.u8()
+    const data = r.take(Math.min(len, r.remaining))
+    return { kind: 'channel-data', snr, channelIndex, hops, txtType: -1, senderTimestamp: 0, text: '', dataType, data }
+  }
+  throw new Error(`not a message frame: code ${code}`)
+}
+
+/** "alice: hello there" -> { sender: 'alice', body: 'hello there' }. Channel posts carry the sender's name inline. */
+export function splitChannelText(text: string): { sender?: string; body: string } {
+  const i = text.indexOf(': ')
+  return i > 0 ? { sender: text.slice(0, i), body: text.slice(i + 2) } : { body: text }
+}
+
+export function parseSent(f: Uint8Array): SentInfo {
+  const r = new ByteReader(f, 1)
+  return { flood: r.u8() === 1, expectedAck: r.u32(), timeoutMs: r.u32() }
+}
+
+export function parseSendConfirmed(f: Uint8Array): SendConfirmed {
+  const r = new ByteReader(f, 1)
+  return { ack: r.u32(), tripMs: r.u32() }
+}
+
 /** Raw over-the-air packet: header, optional transport codes, path_len, path, payload (Packet::writeTo). */
 export function decodePacket(raw: Uint8Array): DecodedPacket | undefined {
   try {
@@ -341,4 +431,35 @@ export const commands = {
   getAutoaddConfig: () => Uint8Array.of(Cmd.GetAutoaddConfig),
   getDefaultFloodScope: () => Uint8Array.of(Cmd.GetDefaultFloodScope),
   runCli: (text: string) => new ByteWriter().u8(Cmd.RunCliCommand).string(text).toBytes(),
+
+  syncNextMessage: () => Uint8Array.of(Cmd.SyncNextMessage),
+  sendTxtMsg: (publicKey: string, text: string, timestamp: number, attempt = 0, txtType: number = TxtType.Plain) =>
+    new ByteWriter().u8(Cmd.SendTxtMsg).u8(txtType).u8(attempt).u32(timestamp).bytes(fromHex(publicKey).slice(0, 6)).string(text).toBytes(),
+  sendChannelTxtMsg: (channelIndex: number, text: string, timestamp: number) =>
+    new ByteWriter().u8(Cmd.SendChannelTxtMsg).u8(TxtType.Plain).u8(channelIndex).u32(timestamp).string(text).toBytes(),
+
+  setDeviceTime: (unixSecs: number) => new ByteWriter().u8(Cmd.SetDeviceTime).u32(unixSecs).toBytes(),
+  setAdvertName: (name: string) => new ByteWriter().u8(Cmd.SetAdvertName).string(name).toBytes(),
+  setAdvertLatLon: (lat: number, lon: number) =>
+    new ByteWriter().u8(Cmd.SetAdvertLatLon).u32(Math.round(lat * 1e6)).u32(Math.round(lon * 1e6)).toBytes(),
+  /** clientRepeat must be sent every time: the firmware turns repeating off when the byte is missing. */
+  setRadioParams: (p: RadioParams, clientRepeat: boolean) =>
+    new ByteWriter().u8(Cmd.SetRadioParams).u32(Math.round(p.freqMHz * 1000)).u32(Math.round(p.bwKHz * 1000))
+      .u8(p.sf).u8(p.cr).u8(clientRepeat ? 1 : 0).toBytes(),
+  setTxPower: (dbm: number) => Uint8Array.of(Cmd.SetRadioTxPower, dbm & 0xff),
+  setTuningParams: (t: TuningParams) =>
+    new ByteWriter().u8(Cmd.SetTuningParams).u32(Math.round(t.rxDelayBase * 1000)).u32(Math.round(t.airtimeFactor * 1000)).toBytes(),
+  /** All four fields go in one frame, so pass the current values for the ones not being changed. */
+  setOtherParams: (o: OtherParams) =>
+    Uint8Array.of(
+      Cmd.SetOtherParams,
+      o.manualAddContacts,
+      (o.telemetry.environment << 4) | (o.telemetry.location << 2) | o.telemetry.base,
+      o.advertLocationPolicy,
+      o.multiAcks,
+    ),
+  setDevicePin: (pin: number) => new ByteWriter().u8(Cmd.SetDevicePin).u32(pin).toBytes(),
+  setAutoaddConfig: (c: AutoaddConfig) => Uint8Array.of(Cmd.SetAutoaddConfig, c.flags, c.maxHops),
+  setPathHashMode: (mode: number) => Uint8Array.of(Cmd.SetPathHashMode, 0, mode),
+  setCustomVar: (name: string, value: string) => new ByteWriter().u8(Cmd.SetCustomVar).string(`${name}:${value}`).toBytes(),
 }

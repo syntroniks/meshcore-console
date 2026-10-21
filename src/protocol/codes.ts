@@ -144,6 +144,11 @@ export const AutoAdd = {
 /** A contact's out_path_len when no direct path is known (messages go by flood). */
 export const OUT_PATH_UNKNOWN = 0xff
 
+export const TxtType = { Plain: 0, CliData: 1, SignedPlain: 2, CliCommand: 3 } as const
+
+/** Longest message text, in bytes (BaseChatMesh.h). Channel posts also spend "<name>: " of it. */
+export const MAX_TEXT_LEN = 160
+
 /** Size of the firmware's frame buffer (BaseSerialInterface.h). */
 export const MAX_FRAME_SIZE = 176
 

@@ -19,6 +19,8 @@ import {
   parseDefaultFloodScope,
   parseDeviceInfo,
   parseErrCode,
+  parseIncomingMessage,
+  parseSent,
   parsePacketStats,
   parseRadioStats,
   parseSelfInfo,
@@ -30,7 +32,11 @@ import {
   type CoreStats,
   type DeviceInfo,
   type FloodScope,
+  type IncomingMessage,
+  type OtherParams,
   type PacketStats,
+  type RadioParams,
+  type SentInfo,
   type RadioStats,
   type SelfInfo,
   type TuningParams,
@@ -92,6 +98,10 @@ const codeIs =
     codes.includes(f[0]) ? 'done' : 'skip'
 
 export const APP_PROTOCOL_VERSION = 3
+
+const MESSAGE_CODES = [Resp.ContactMsgRecv, Resp.ChannelMsgRecv, Resp.ContactMsgRecvV3, Resp.ChannelMsgRecvV3, Resp.ChannelDataRecv]
+
+const nowSecs = () => Math.floor(Date.now() / 1000)
 
 export class MeshCoreClient {
   private readonly transport: Transport
@@ -321,6 +331,89 @@ export class MeshCoreClient {
     return parseDefaultFloodScope(
       await this.one('flood scope query', commands.getDefaultFloodScope(), Resp.DefaultFloodScope),
     )
+  }
+
+  // ---- messages ----------------------------------------------------------------------------------
+
+  /** Pop the next message off the radio's offline queue; null when it's empty. The radio forgets it. */
+  async syncNextMessage(): Promise<IncomingMessage | null> {
+    const [frame] = await this.request('message sync', commands.syncNextMessage(), codeIs(...MESSAGE_CODES, Resp.NoMoreMessages))
+    return frame[0] === Resp.NoMoreMessages ? null : parseIncomingMessage(frame)
+  }
+
+  /**
+   * Send a direct text message. The radio answers once it has queued the packet; delivery is confirmed
+   * later by a PUSH_CODE_SEND_CONFIRMED carrying SentInfo.expectedAck.
+   */
+  async sendText(publicKey: string, text: string, timestamp = nowSecs(), attempt = 0): Promise<SentInfo> {
+    return parseSent(await this.one('message send', commands.sendTxtMsg(publicKey, text, timestamp, attempt), Resp.Sent))
+  }
+
+  /** Post to a channel. There's no delivery confirmation for channel posts. */
+  async sendChannelText(channelIndex: number, text: string, timestamp = nowSecs()): Promise<void> {
+    await this.ok('channel send', commands.sendChannelTxtMsg(channelIndex, text, timestamp))
+  }
+
+  // ---- settings ----------------------------------------------------------------------------------
+
+  private async ok(what: string, payload: Uint8Array): Promise<void> {
+    await this.one(what, payload, Resp.Ok)
+  }
+
+  /** The firmware only moves its clock forward; an earlier time fails with ErrCode.IllegalArg. */
+  setDeviceTime(unixSecs = nowSecs()): Promise<void> {
+    return this.ok('set time', commands.setDeviceTime(unixSecs))
+  }
+
+  setAdvertName(name: string): Promise<void> {
+    return this.ok('set name', commands.setAdvertName(name))
+  }
+
+  setAdvertLatLon(lat: number, lon: number): Promise<void> {
+    return this.ok('set location', commands.setAdvertLatLon(lat, lon))
+  }
+
+  /** Takes effect immediately. */
+  setRadioParams(params: RadioParams, clientRepeat: boolean): Promise<void> {
+    return this.ok('set radio', commands.setRadioParams(params, clientRepeat))
+  }
+
+  setTxPower(dbm: number): Promise<void> {
+    return this.ok('set tx power', commands.setTxPower(dbm))
+  }
+
+  setTuningParams(t: TuningParams): Promise<void> {
+    return this.ok('set tuning', commands.setTuningParams(t))
+  }
+
+  setOtherParams(o: OtherParams): Promise<void> {
+    return this.ok('set other params', commands.setOtherParams(o))
+  }
+
+  /** 0 for a random PIN each boot, or six digits. */
+  setDevicePin(pin: number): Promise<void> {
+    return this.ok('set pin', commands.setDevicePin(pin))
+  }
+
+  setAutoaddConfig(c: AutoaddConfig): Promise<void> {
+    return this.ok('set auto-add', commands.setAutoaddConfig(c))
+  }
+
+  /** 0, 1 or 2 for 1, 2 or 3 bytes per hop in paths. */
+  setPathHashMode(mode: number): Promise<void> {
+    return this.ok('set path hash mode', commands.setPathHashMode(mode))
+  }
+
+  setCustomVar(name: string, value: string): Promise<void> {
+    return this.ok('set custom var', commands.setCustomVar(name, value))
+  }
+
+  /** Run a CLI 'set' (or other) command that should answer "OK…"; throws with the radio's reply otherwise. */
+  async runCliExpectOk(command: string): Promise<string> {
+    const reply = await this.runCli(command)
+    if (reply === null) throw new TimeoutError(`'${command}'`)
+    if (!reply.startsWith('OK')) throw new Error(reply)
+    return reply
   }
 
   /**

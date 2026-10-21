@@ -1,6 +1,8 @@
-// Read-only check of the protocol client against a real radio over USB.
-//   pnpm probe [/dev/ttyACM0]
-// Runs every query the console uses, plus 'get' CLI commands. Changes nothing on the radio.
+// Check the protocol client against a real radio over USB.
+//   pnpm probe [/dev/ttyACM0]               read-only: every query the console uses, plus 'get' CLI commands
+//   pnpm probe [/dev/ttyACM0] --write-same  also writes every setting back with the value it already has
+//                                           (the clock moves forward 1 s), then reads back and compares
+// Never syncs messages: that would take them off the radio.
 
 import { ADV_TYPE_NAMES } from '../src/protocol/codes.ts'
 import { MeshCoreClient, PUSH_NAMES } from '../src/protocol/client.ts'
@@ -8,7 +10,9 @@ import { parseRxLog } from '../src/protocol/messages.ts'
 import { Push } from '../src/protocol/codes.ts'
 import { findRadioPort, NodeSerialTransport } from './node-serial.ts'
 
-const path = process.argv[2] ?? (await findRadioPort())
+const args = process.argv.slice(2)
+const writeSame = args.includes('--write-same')
+const path = args.find((a) => !a.startsWith('--')) ?? (await findRadioPort())
 if (!path) {
   console.error('no radio found; pass the serial port path')
   process.exit(1)
@@ -56,6 +60,46 @@ try {
     cli[cmd] = await client.runCli(cmd)
   }
   section('cli', cli)
+
+  if (writeSame) {
+    const tuning = await client.getTuningParams()
+    const autoadd = await client.getAutoaddConfig()
+    const txdelay = (await client.runCli('get txdelay'))?.replace(/^> /, '')
+    const results: Record<string, string> = {}
+    const step = async (name: string, fn: () => Promise<unknown>) => {
+      try {
+        await fn()
+        results[name] = 'OK'
+      } catch (err) {
+        results[name] = err instanceof Error ? err.message : String(err)
+      }
+    }
+    await step('name', () => client.setAdvertName(self.name))
+    await step('location', () => client.setAdvertLatLon(self.lat, self.lon))
+    await step('radio params', () => client.setRadioParams(self.radio, device.clientRepeat ?? false))
+    await step('tx power', () => client.setTxPower(self.txPowerDbm))
+    await step('tuning', () => client.setTuningParams(tuning))
+    const other = { manualAddContacts: self.manualAddContacts, telemetry: self.telemetry, advertLocationPolicy: self.advertLocationPolicy, multiAcks: self.multiAcks }
+    await step('other params', () => client.setOtherParams(other))
+    await step('auto-add', () => client.setAutoaddConfig(autoadd))
+    await step('path hash mode', () => client.setPathHashMode(device.pathHashMode ?? 0))
+    await step('ble pin', () => client.setDevicePin(device.blePin))
+    await step('clock +1s', async () => client.setDeviceTime((await client.getDeviceTime()) + 1))
+    await step('clock -60s (must be refused)', async () => client.setDeviceTime((await client.getDeviceTime()) - 60))
+    if (txdelay) await step(`cli 'set txdelay ${txdelay}'`, () => client.runCliExpectOk(`set txdelay ${txdelay}`))
+    section('writes', results)
+
+    const after = await client.appStart()
+    const deviceAfter = await client.deviceQuery()
+    const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+    section('read back unchanged', {
+      self: same(after, self),
+      device: same({ ...deviceAfter }, { ...device }),
+      tuning: same(await client.getTuningParams(), tuning),
+      autoadd: same(await client.getAutoaddConfig(), autoadd),
+      txdelay: (await client.runCli('get txdelay'))?.replace(/^> /, '') === txdelay,
+    })
+  }
 } finally {
   await client.disconnect()
 }

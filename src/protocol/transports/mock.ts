@@ -1,8 +1,8 @@
 // A simulated companion radio, for demo mode and tests. Replies use the same layouts as firmware
 // v1.18.0, so the UI and parsers see what a real device would send.
 
-import { ByteReader, ByteWriter, fromHex } from '../bytes.ts'
-import { AdvType, Cmd, ErrCode, Push, Resp, StatsType } from '../codes.ts'
+import { ByteReader, ByteWriter, fromHex, toHex } from '../bytes.ts'
+import { AdvType, Cmd, ErrCode, Push, Resp, StatsType, TxtType } from '../codes.ts'
 import { encodeFrame, FrameDecoder, TO_RADIO } from '../framing.ts'
 import type { Transport, TransportSink } from '../client.ts'
 
@@ -17,10 +17,22 @@ interface MockContact {
 }
 
 const DEMO_KEY = '3a7f1c9e5b2d8a4f6e0c1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a'
+const CHANNEL_NAMES = ['Public', '#austin']
+const CHATTER = ['anyone on 910.525 tonight?', 'testing from the hilltop', 'good copy, thanks', 'repeater looks healthy', 'heading out on the trail, will check in later']
+const CHANNEL_POSTERS = ['KJ5GFX Bill', 'Driftwood', 'Maya', 'Tom 🚲']
 
 export interface MockOptions {
   /** emit a fake received-packet log every few seconds */
   rxLog?: boolean
+  /** receive a DM or channel post now and then */
+  chatter?: boolean
+  /** how far behind real time the radio's clock starts, in seconds */
+  clockBehindSecs?: number
+  /** messages already waiting in the offline queue when the app connects */
+  queuedMessages?: number
+  /** share of DMs that get an ACK (default 0.85), and how long it takes in ms (default 900-3400) */
+  ackRate?: number
+  ackDelayMs?: [number, number]
 }
 
 export class MockRadioTransport implements Transport {
@@ -29,14 +41,24 @@ export class MockRadioTransport implements Transport {
   private readonly decoder = new FrameDecoder()
   private readonly started = Date.now()
   private readonly options: MockOptions
-  private rxTimer: ReturnType<typeof setTimeout> | null = null
+  private timers: ReturnType<typeof setTimeout>[] = []
   private received = 0
+  private clockOffset: number // radio time - real time, secs
+  private readonly queue: Uint8Array[] = []
 
   private name = 'Demo Node'
+  private lat = 30.267153
+  private lon = -97.743057
   private radio = { freq: 910.525, bw: 62.5, sf: 7, cr: 5 }
+  private clientRepeat = false
   private tx = 22
+  private pin = 0
+  private tuning = { rx: 0, af: 1 }
+  private other = { manualAdd: 0, telemetry: 0, advLoc: 0, multiAcks: 0 }
+  private autoadd = { flags: 0, maxHops: 0 }
+  private pathHashMode = 0
+  private gps = '0'
   private cli: Record<string, string> = {
-    af: '1.0',
     rxdelay: '0.0',
     txdelay: '0.5',
     'direct.txdelay': '0.2',
@@ -44,8 +66,6 @@ export class MockRadioTransport implements Transport {
     'int.thresh': '0',
     cad: 'off',
     dutycycle: '100.0%',
-    'multi.acks': '0',
-    'path.hash.mode': '0',
     'radio.rxgain': 'on',
     'tz.offset': '0',
   }
@@ -53,22 +73,26 @@ export class MockRadioTransport implements Transport {
     { key: 'a1'.repeat(32), name: 'Hilltop Repeater', type: AdvType.Repeater, pathLen: 0xff, lastAdvert: 0, lat: 30.2849, lon: -97.7341 },
     { key: 'b2'.repeat(32), name: 'Downtown Room', type: AdvType.Room, pathLen: 2, lastAdvert: 0, lat: 0, lon: 0 },
     { key: 'c3'.repeat(32), name: 'Alex 📡', type: AdvType.Chat, pathLen: 1, lastAdvert: 0, lat: 0, lon: 0 },
+    { key: 'd4'.repeat(32), name: 'Sam', type: AdvType.Chat, pathLen: 0xff, lastAdvert: 0, lat: 0, lon: 0 },
   ]
 
   constructor(options: MockOptions = {}) {
     this.options = options
+    this.clockOffset = -(options.clockBehindSecs ?? 0)
   }
 
   async open(sink: TransportSink): Promise<void> {
     this.sink = sink
     const now = this.now()
     this.contacts.forEach((c, i) => (c.lastAdvert = now - 600 * (i + 1)))
-    if (this.options.rxLog) this.scheduleRx()
+    for (let i = 0; i < (this.options.queuedMessages ?? 0); i++) this.receiveChatter(false, 3600 - i * 600)
+    if (this.options.rxLog) this.every(2500, 6500, () => this.receivePacket())
+    if (this.options.chatter) this.every(20000, 40000, () => this.receiveChatter(true))
   }
 
   async close(): Promise<void> {
-    if (this.rxTimer) clearTimeout(this.rxTimer)
-    this.rxTimer = null
+    this.timers.forEach(clearTimeout)
+    this.timers = []
     this.sink = null
   }
 
@@ -76,13 +100,25 @@ export class MockRadioTransport implements Transport {
     // frames to the radio use '<', which FrameDecoder expects as '>': flip the marker byte
     const flipped = Uint8Array.from(data, (b, i) => (i === 0 && b === TO_RADIO ? 0x3e : b))
     for (const cmd of this.decoder.push(flipped)) {
-      // reply asynchronously, like a real radio
-      setTimeout(() => this.handle(cmd), 5)
+      this.later(5, () => this.handle(cmd)) // reply asynchronously, like a real radio
     }
   }
 
+  // ---- plumbing ----
+
+  private later(ms: number, fn: () => void): void {
+    this.timers.push(setTimeout(() => this.sink && fn(), ms))
+  }
+
+  private every(minMs: number, maxMs: number, fn: () => void): void {
+    this.later(minMs + Math.random() * (maxMs - minMs), () => {
+      fn()
+      this.every(minMs, maxMs, fn)
+    })
+  }
+
   private now(): number {
-    return Math.floor(Date.now() / 1000)
+    return Math.floor(Date.now() / 1000) + this.clockOffset
   }
 
   private send(payload: Uint8Array): void {
@@ -91,23 +127,70 @@ export class MockRadioTransport implements Transport {
     this.sink?.onData(frame)
   }
 
+  private ok(): void {
+    this.send(Uint8Array.of(Resp.Ok))
+  }
+
   private err(code: number): void {
     this.send(Uint8Array.of(Resp.Err, code))
   }
 
+  // ---- incoming traffic ----
+
+  private receiveChatter(notify: boolean, agoSecs = 0): void {
+    const text = CHATTER[Math.floor(Math.random() * CHATTER.length)]
+    const snr = Math.round((Math.random() * 16 - 4) * 4)
+    const ts = this.now() - agoSecs
+    if (Math.random() < 0.35) {
+      const from = this.contacts[2]
+      this.queueDirect(from, text, ts, snr)
+    } else {
+      const channel = Math.random() < 0.6 ? 0 : 1
+      const poster = CHANNEL_POSTERS[Math.floor(Math.random() * CHANNEL_POSTERS.length)]
+      this.queue.push(
+        new ByteWriter().u8(Resp.ChannelMsgRecvV3).u8(snr).u16(0).u8(channel).u8(Math.floor(Math.random() * 4))
+          .u8(TxtType.Plain).u32(ts).string(`${poster}: ${text}`).toBytes(),
+      )
+    }
+    if (notify) this.send(Uint8Array.of(Push.MsgWaiting))
+  }
+
+  private queueDirect(from: MockContact, text: string, ts: number, snr: number): void {
+    this.queue.push(
+      new ByteWriter().u8(Resp.ContactMsgRecvV3).u8(snr).u16(0).bytes(fromHex(from.key).slice(0, 6))
+        .u8(from.pathLen === 0xff ? 2 : 0xff).u8(TxtType.Plain).u32(ts).string(text).toBytes(),
+    )
+  }
+
+  private receivePacket(): void {
+    this.received++
+    const types = [0x04, 0x05, 0x02, 0x03, 0x08] // advert, group text, text, ack, path
+    const header = (types[Math.floor(Math.random() * types.length)] << 2) | (Math.random() < 0.7 ? 1 : 2)
+    const hops = Math.floor(Math.random() * 4)
+    const body = Array.from({ length: hops + 20 + Math.floor(Math.random() * 60) }, () => Math.floor(Math.random() * 256))
+    const raw = new ByteWriter().u8(header).u8(hops).bytes(body).toBytes()
+    const snr = Math.round((Math.random() * 20 - 8) * 4)
+    const rssi = -60 - Math.floor(Math.random() * 60)
+    this.send(new ByteWriter().u8(Push.LogRxData).u8(snr).u8(rssi).bytes(raw).toBytes())
+  }
+
+  // ---- commands ----
+
   private handle(cmd: Uint8Array): void {
     const w = () => new ByteWriter()
+    const r = new ByteReader(cmd, 1)
     switch (cmd[0]) {
       case Cmd.DeviceQuery:
         return this.send(
-          w().u8(Resp.DeviceInfo).u8(14).u8(175).u8(40).u32(0)
+          w().u8(Resp.DeviceInfo).u8(14).u8(175).u8(40).u32(this.pin)
             .fixedString('21-Oct-2026', 12).fixedString('Demo Board', 40).fixedString('v1.18.0-demo', 20)
-            .u8(0).u8(0).toBytes(),
+            .u8(this.clientRepeat ? 1 : 0).u8(this.pathHashMode).toBytes(),
         )
       case Cmd.AppStart:
         return this.send(
           w().u8(Resp.SelfInfo).u8(AdvType.Chat).u8(this.tx).u8(22).bytes(fromHex(DEMO_KEY))
-            .u32(30267153).u32(-97743057).u8(0).u8(0).u8(0).u8(0)
+            .u32(Math.round(this.lat * 1e6)).u32(Math.round(this.lon * 1e6))
+            .u8(this.other.multiAcks).u8(this.other.advLoc).u8(this.other.telemetry).u8(this.other.manualAdd)
             .u32(Math.round(this.radio.freq * 1000)).u32(Math.round(this.radio.bw * 1000)).u8(this.radio.sf).u8(this.radio.cr)
             .string(this.name).toBytes(),
         )
@@ -115,6 +198,12 @@ export class MockRadioTransport implements Transport {
         return this.send(w().u8(Resp.BattAndStorage).u16(3987).u32(6).u32(3169).toBytes())
       case Cmd.GetDeviceTime:
         return this.send(w().u8(Resp.CurrTime).u32(this.now()).toBytes())
+      case Cmd.SetDeviceTime: {
+        const secs = r.u32()
+        if (secs < this.now()) return this.err(ErrCode.IllegalArg) // the firmware only moves forward
+        this.clockOffset = secs - Math.floor(Date.now() / 1000)
+        return this.ok()
+      }
       case Cmd.GetStats:
         return this.stats(cmd[1])
       case Cmd.GetContacts:
@@ -132,26 +221,119 @@ export class MockRadioTransport implements Transport {
         const idx = cmd[1]
         if (idx >= 40) return this.err(ErrCode.NotFound)
         const ch = w().u8(Resp.ChannelInfo).u8(idx)
-        if (idx === 0) ch.fixedString('Public', 32).bytes(fromHex('8b3387e9c5cdea6ac9e5edbaa115cd72'))
-        else if (idx === 1) ch.fixedString('#austin', 32).bytes(fromHex('d1c4a3b2f0e9d8c7b6a5948372615041'))
+        if (idx === 0) ch.fixedString(CHANNEL_NAMES[0], 32).bytes(fromHex('8b3387e9c5cdea6ac9e5edbaa115cd72'))
+        else if (idx === 1) ch.fixedString(CHANNEL_NAMES[1], 32).bytes(fromHex('d1c4a3b2f0e9d8c7b6a5948372615041'))
         else ch.fixedString('', 32).bytes(new Uint8Array(16))
         return this.send(ch.toBytes())
       }
+      case Cmd.SyncNextMessage: {
+        const next = this.queue.shift()
+        return this.send(next ?? Uint8Array.of(Resp.NoMoreMessages))
+      }
+      case Cmd.SendTxtMsg:
+        return this.sendTxt(r)
+      case Cmd.SendChannelTxtMsg:
+        r.u8() // txt type
+        return r.u8() < CHANNEL_NAMES.length ? this.ok() : this.err(ErrCode.NotFound)
       case Cmd.GetCustomVars:
-        return this.send(w().u8(Resp.CustomVars).string('gps:0').toBytes())
+        return this.send(w().u8(Resp.CustomVars).string(`gps:${this.gps}`).toBytes())
+      case Cmd.SetCustomVar: {
+        const [name, value] = r.restString().split(':')
+        if (name !== 'gps' || (value !== '0' && value !== '1')) return this.err(ErrCode.IllegalArg)
+        this.gps = value
+        return this.ok()
+      }
       case Cmd.GetTuningParams:
-        return this.send(w().u8(Resp.TuningParams).u32(0).u32(1000).toBytes())
+        return this.send(w().u8(Resp.TuningParams).u32(Math.round(this.tuning.rx * 1000)).u32(Math.round(this.tuning.af * 1000)).toBytes())
+      case Cmd.SetTuningParams:
+        this.tuning = { rx: r.u32() / 1000, af: r.u32() / 1000 }
+        return this.ok()
       case Cmd.GetAutoaddConfig:
-        return this.send(w().u8(Resp.AutoaddConfig).u8(0).u8(0).toBytes())
+        return this.send(w().u8(Resp.AutoaddConfig).u8(this.autoadd.flags).u8(this.autoadd.maxHops).toBytes())
+      case Cmd.SetAutoaddConfig:
+        this.autoadd = { flags: r.u8(), maxHops: Math.min(r.u8(), 64) }
+        return this.ok()
       case Cmd.GetDefaultFloodScope:
         return this.send(Uint8Array.of(Resp.DefaultFloodScope))
+      case Cmd.SetAdvertName:
+        this.name = r.restString().slice(0, 31)
+        return this.ok()
+      case Cmd.SetAdvertLatLon: {
+        const lat = r.i32()
+        const lon = r.i32()
+        if (Math.abs(lat) > 90e6 || Math.abs(lon) > 180e6) return this.err(ErrCode.IllegalArg)
+        this.lat = lat / 1e6
+        this.lon = lon / 1e6
+        return this.ok()
+      }
+      case Cmd.SetRadioParams: {
+        const freq = r.u32()
+        const bw = r.u32()
+        const sf = r.u8()
+        const cr = r.u8()
+        const repeat = r.remaining ? r.u8() : 0
+        if (freq < 150000 || freq > 2500000 || sf < 5 || sf > 12 || cr < 5 || cr > 8 || bw < 7000 || bw > 500000) return this.err(ErrCode.IllegalArg)
+        this.radio = { freq: freq / 1000, bw: bw / 1000, sf, cr }
+        this.clientRepeat = repeat !== 0
+        return this.ok()
+      }
+      case Cmd.SetRadioTxPower: {
+        const dbm = r.i8()
+        if (dbm < -9 || dbm > 22) return this.err(ErrCode.IllegalArg)
+        this.tx = dbm
+        return this.ok()
+      }
+      case Cmd.SetOtherParams:
+        this.other.manualAdd = r.u8()
+        if (r.remaining) this.other.telemetry = r.u8()
+        if (r.remaining) this.other.advLoc = r.u8()
+        if (r.remaining) this.other.multiAcks = r.u8()
+        return this.ok()
+      case Cmd.SetDevicePin: {
+        const pin = r.u32()
+        if (pin !== 0 && (pin < 100000 || pin > 999999)) return this.err(ErrCode.IllegalArg)
+        this.pin = pin
+        return this.ok()
+      }
+      case Cmd.SetPathHashMode: {
+        r.u8()
+        const mode = r.u8()
+        if (mode >= 3) return this.err(ErrCode.IllegalArg)
+        this.pathHashMode = mode
+        return this.ok()
+      }
       case Cmd.RunCliCommand: {
-        const reply = this.runCli(new ByteReader(cmd, 1).restString())
+        const reply = this.runCli(r.restString())
         if (reply !== null) this.send(w().u8(Resp.CliReply).string(reply).toBytes())
         return
       }
       default:
         return this.err(ErrCode.UnsupportedCmd)
+    }
+  }
+
+  private sendTxt(r: ByteReader): void {
+    const txtType = r.u8()
+    r.u8() // attempt
+    r.u32() // timestamp
+    const prefix = toHex(r.take(6))
+    const text = r.restString()
+    const to = this.contacts.find((c) => c.key.startsWith(prefix))
+    if (!to) return this.err(ErrCode.NotFound)
+    if (txtType !== TxtType.Plain) return this.err(ErrCode.UnsupportedCmd)
+    const ack = (Math.random() * 0xffffffff) >>> 0
+    const flood = to.pathLen === 0xff
+    this.send(new ByteWriter().u8(Resp.Sent).u8(flood ? 1 : 0).u32(ack).u32(flood ? 8000 : 5000).toBytes())
+    if (Math.random() < (this.options.ackRate ?? 0.85)) {
+      const [lo, hi] = this.options.ackDelayMs ?? [900, 3400]
+      const trip = lo + Math.floor(Math.random() * (hi - lo))
+      this.later(trip, () => this.send(new ByteWriter().u8(Push.SendConfirmed).u32(ack).u32(trip).toBytes()))
+    }
+    if (to.name === 'Alex 📡') {
+      this.later(4000, () => {
+        this.queueDirect(to, text.endsWith('?') ? 'yes, all good here' : '👍 got it', this.now(), 30)
+        this.send(Uint8Array.of(Push.MsgWaiting))
+      })
     }
   }
 
@@ -181,7 +363,10 @@ export class MockRadioTransport implements Transport {
       this.tx = Number(cmd.slice(7))
       return 'OK'
     }
-    if (cmd === 'get radio.fem.rxgain') return 'Error: unsupported'
+    if (cmd === 'get af') return `> ${this.tuning.af}`
+    if (cmd === 'get multi.acks') return `> ${this.other.multiAcks}`
+    if (cmd === 'get path.hash.mode') return `> ${this.pathHashMode}`
+    if (cmd === 'get radio.fem.rxgain' || cmd.startsWith('set radio.fem.rxgain ')) return 'Error: unsupported'
     if (cmd.startsWith('get ')) {
       const v = this.cli[cmd.slice(4)]
       return v === undefined ? 'Unknown command' : `> ${v}`
@@ -189,23 +374,9 @@ export class MockRadioTransport implements Transport {
     if (cmd.startsWith('set ')) {
       const [key, ...rest] = cmd.slice(4).split(' ')
       if (!(key in this.cli) || rest.length === 0) return 'Unknown command'
-      this.cli[key] = rest.join(' ')
-      return 'OK'
+      this.cli[key] = key === 'dutycycle' ? `${Number(rest[0]).toFixed(1)}%` : rest.join(' ')
+      return key === 'dutycycle' ? `OK - ${this.cli[key]}` : 'OK'
     }
     return 'Unknown command'
-  }
-
-  private scheduleRx(): void {
-    this.rxTimer = setTimeout(() => {
-      this.received++
-      const types = [0x04, 0x05, 0x02, 0x03, 0x08] // advert, group text, text, ack, path
-      const header = (types[Math.floor(Math.random() * types.length)] << 2) | (Math.random() < 0.7 ? 1 : 2)
-      const hops = Math.floor(Math.random() * 4)
-      const raw = new ByteWriter().u8(header).u8(hops).bytes(Array.from({ length: hops + 20 + Math.floor(Math.random() * 60) }, () => Math.floor(Math.random() * 256))).toBytes()
-      const snr = Math.round((Math.random() * 20 - 8) * 4)
-      const rssi = -60 - Math.floor(Math.random() * 60)
-      this.send(new ByteWriter().u8(Push.LogRxData).u8(snr).u8(rssi).bytes(raw).toBytes())
-      this.scheduleRx()
-    }, 2500 + Math.random() * 4000)
   }
 }

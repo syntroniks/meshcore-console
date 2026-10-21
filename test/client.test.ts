@@ -32,7 +32,7 @@ describe('MeshCoreClient against the mock radio', () => {
     expect(device.firmwareVersion).toBe('v1.18.0-demo')
     expect((await client.appStart()).name).toBe('Demo Node')
     const { total, contacts } = await client.getContacts()
-    expect(total).toBe(3)
+    expect(total).toBe(4)
     expect(contacts.map((c) => c.name)).toContain('Alex 📡')
     expect((await client.getChannels(device.maxChannels)).map((c) => c.name)).toEqual(['Public', '#austin'])
     expect(await client.runCli('get tx')).toBe('> 22')
@@ -113,5 +113,67 @@ describe('MeshCoreClient reply handling', () => {
     t.sink!.onClose(new Error('device lost'))
     await expect(p).rejects.toThrow('device lost')
     expect(client.isOpen).toBe(false)
+  })
+})
+
+describe('messages and writes against the mock radio', () => {
+  it('drains the offline queue, then reports it empty', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport({ queuedMessages: 3 }))
+    await client.connect()
+    await client.deviceQuery()
+    const got = []
+    for (let m = await client.syncNextMessage(); m; m = await client.syncNextMessage()) got.push(m)
+    expect(got).toHaveLength(3)
+    expect(got.every((m) => m.text.length > 0)).toBe(true)
+    expect(await client.syncNextMessage()).toBeNull()
+    await client.disconnect()
+  })
+
+  it('returns the expected ACK for a DM, and the delivery push carries it', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport({ ackRate: 1, ackDelayMs: [50, 60] }))
+    const acks: number[] = []
+    client.on('push', (f) => f[0] === Push.SendConfirmed && acks.push(new DataView(f.buffer, f.byteOffset).getUint32(1, true)))
+    await client.connect()
+    const { contacts } = await client.getContacts()
+    const sam = contacts.find((c) => c.name === 'Sam')!
+    const sent = await client.sendText(sam.publicKey, 'hello')
+    expect(sent.flood).toBe(true) // Sam has no known path
+    expect(sent.expectedAck).not.toBe(0)
+    await expect(client.sendText('ff'.repeat(32), 'nobody')).rejects.toMatchObject({ code: ErrCode.NotFound })
+    await vi.waitFor(() => expect(acks).toContain(sent.expectedAck))
+    await client.disconnect()
+  })
+
+  it('refuses to move the radio clock backwards', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport({ clockBehindSecs: -3600 })) // an hour ahead
+    await client.connect()
+    await expect(client.setDeviceTime()).rejects.toMatchObject({ code: ErrCode.IllegalArg })
+    await client.disconnect()
+  })
+
+  it('moves a lagging clock forward', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport({ clockBehindSecs: 7200 }))
+    await client.connect()
+    expect(Date.now() / 1000 - (await client.getDeviceTime())).toBeGreaterThan(7000)
+    await client.setDeviceTime()
+    expect(Math.abs(Date.now() / 1000 - (await client.getDeviceTime()))).toBeLessThan(2)
+    await client.disconnect()
+  })
+
+  it('writes radio params and reads them back', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport())
+    await client.connect()
+    await client.setRadioParams({ freqMHz: 869.618, bwKHz: 62.5, sf: 8, cr: 8 }, false)
+    expect((await client.appStart()).radio).toEqual({ freqMHz: 869.618, bwKHz: 62.5, sf: 8, cr: 8 })
+    await expect(client.setRadioParams({ freqMHz: 869.618, bwKHz: 62.5, sf: 13, cr: 8 }, false)).rejects.toMatchObject({ code: ErrCode.IllegalArg })
+    await client.disconnect()
+  })
+
+  it('treats a CLI reply other than OK as a failed write', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport())
+    await client.connect()
+    expect(await client.runCliExpectOk('set txdelay 0.7')).toBe('OK')
+    await expect(client.runCliExpectOk('set radio.fem.rxgain on')).rejects.toThrow('Error: unsupported')
+    await client.disconnect()
   })
 })
