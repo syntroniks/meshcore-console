@@ -1,16 +1,22 @@
 // Serial framing for the companion protocol over USB / UART / TCP:
 //   app -> radio:  '<' len_lo len_hi payload
 //   radio -> app:  '>' len_lo len_hi payload
+// Bluetooth needs none: every write and every notification is one whole frame.
 
 import { MAX_FRAME_SIZE } from './codes.ts'
 
 export const TO_RADIO = 0x3c // '<'
 export const FROM_RADIO = 0x3e // '>'
 
-export function encodeFrame(payload: Uint8Array): Uint8Array {
+export function checkFrameSize(payload: Uint8Array): Uint8Array {
   if (payload.length === 0 || payload.length > MAX_FRAME_SIZE) {
     throw new RangeError(`frame payload must be 1-${MAX_FRAME_SIZE} bytes, got ${payload.length}`)
   }
+  return payload
+}
+
+export function encodeFrame(payload: Uint8Array): Uint8Array {
+  checkFrameSize(payload)
   const out = new Uint8Array(3 + payload.length)
   out[0] = TO_RADIO
   out[1] = payload.length & 0xff

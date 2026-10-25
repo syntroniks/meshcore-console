@@ -52,10 +52,13 @@ export interface MockOptions {
   /** share of DMs that get an ACK (default 0.85), and how long it takes in ms (default 900-3400) */
   ackRate?: number
   ackDelayMs?: [number, number]
+  /** talk in whole frames with no serial framing, like the Bluetooth link */
+  framed?: boolean
 }
 
 export class MockRadioTransport implements Transport {
   readonly label = 'demo radio'
+  readonly framed: boolean
   private sink: TransportSink | null = null
   private readonly decoder = new FrameDecoder()
   private readonly started = Date.now()
@@ -99,6 +102,7 @@ export class MockRadioTransport implements Transport {
 
   constructor(options: MockOptions = {}) {
     this.options = options
+    this.framed = options.framed ?? false
     this.clockOffset = -(options.clockBehindSecs ?? 0)
   }
 
@@ -119,8 +123,8 @@ export class MockRadioTransport implements Transport {
 
   async write(data: Uint8Array): Promise<void> {
     // frames to the radio use '<', which FrameDecoder expects as '>': flip the marker byte
-    const flipped = Uint8Array.from(data, (b, i) => (i === 0 && b === TO_RADIO ? 0x3e : b))
-    for (const cmd of this.decoder.push(flipped)) {
+    const cmds = this.framed ? [data.slice()] : this.decoder.push(Uint8Array.from(data, (b, i) => (i === 0 && b === TO_RADIO ? 0x3e : b)))
+    for (const cmd of cmds) {
       this.later(5, () => this.handle(cmd)) // reply asynchronously, like a real radio
     }
   }
@@ -143,6 +147,10 @@ export class MockRadioTransport implements Transport {
   }
 
   private send(payload: Uint8Array): void {
+    if (this.framed) {
+      this.sink?.onData(payload)
+      return
+    }
     const frame = encodeFrame(payload)
     frame[0] = 0x3e // radio -> app marker
     this.sink?.onData(frame)

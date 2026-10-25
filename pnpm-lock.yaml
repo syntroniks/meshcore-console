@@ -200,6 +200,9 @@ importers:
       '@types/w3c-web-serial':
         specifier: ^1.0.8
         version: 1.0.8
+      '@types/web-bluetooth':
+        specifier: ^0.0.22
+        version: 0.0.22
       '@vitejs/plugin-react':
         specifier: ^6.1.2
         version: 6.1.2(vite@8.3.4(@types/node@26.6.5))
@@ -553,6 +556,9 @@ packages:
 
   '@types/w3c-web-serial@1.0.8':
     resolution: {integrity: sha512-QQOT+bxQJhRGXoZDZGLs3ksLud1dMNnMiSQtBA0w8KXvLpXX4oM4TZb6J0GgJ8UbCaHo5s9/4VQT8uXy9JER2A==}
+
+  '@types/web-bluetooth@0.0.22':
+    resolution: {integrity: sha512-4O7kU0Ut0irZvFyk3EvgDrzFYBQI80Puhkb65I7eV6WTZX4iOo5zoDrEfjDBRB7x5Stz31csoHO4hAjSiRTALw==}
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
@@ -1217,6 +1223,8 @@ snapshots:
       csstype: 3.2.3
 
   '@types/w3c-web-serial@1.0.8': {}
+
+  '@types/web-bluetooth@0.0.22': {}
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     optional: true

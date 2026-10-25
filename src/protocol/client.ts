@@ -6,7 +6,7 @@
 
 import { MAX_CHANNEL_NAME_BYTES, nameBytes } from './channels.ts'
 import { ERR_CODE_NAMES, ErrCode, Push, Resp, StatsType } from './codes.ts'
-import { encodeFrame, FrameDecoder } from './framing.ts'
+import { checkFrameSize, encodeFrame, FrameDecoder } from './framing.ts'
 import {
   commands,
   parseAutoaddConfig,
@@ -48,9 +48,11 @@ export interface TransportSink {
   onClose(error?: Error): void
 }
 
-/** A byte pipe to the radio: WebSerial in the browser, node-serialport in scripts, or a mock. */
+/** A pipe to the radio: WebSerial or Web Bluetooth in the browser, node-serialport in scripts, or a mock. */
 export interface Transport {
   readonly label: string
+  /** each write and each onData chunk is exactly one frame (Bluetooth), so the client adds no serial framing */
+  readonly framed?: boolean
   open(sink: TransportSink): Promise<void>
   write(data: Uint8Array): Promise<void>
   close(): Promise<void>
@@ -173,7 +175,7 @@ export class MeshCoreClient {
   }
 
   private onData(chunk: Uint8Array): void {
-    for (const frame of this.decoder.push(chunk)) {
+    for (const frame of this.transport.framed ? [chunk] : this.decoder.push(chunk)) {
       this.emit('frameIn', frame)
       if (frame[0] >= 0x80) {
         this.emit('push', frame)
@@ -225,7 +227,8 @@ export class MeshCoreClient {
     const timer = setTimeout(() => this.finish(new TimeoutError(job.what)), job.timeoutMs)
     this.current = { job, frames, timer }
     this.emit('frameOut', job.payload)
-    this.transport.write(encodeFrame(job.payload)).catch((err: Error) => this.finish(err))
+    const data = this.transport.framed ? checkFrameSize(job.payload) : encodeFrame(job.payload)
+    this.transport.write(data).catch((err: Error) => this.finish(err))
   }
 
   /** Send a command and collect reply frames until the matcher says done. */
