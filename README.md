@@ -1,7 +1,7 @@
 # MeshCore Console
 
 A browser console for MeshCore companion radios over USB: messages (channels and direct), device status, editable
-settings, contacts, channels, a packet analyzer that decodes and decrypts what the radio hears, and a shell that runs
+settings, contacts, channel management, a packet analyzer that decodes and decrypts what the radio hears, and a shell that runs
 commands on the radio's CLI.
 
 It talks the MeshCore companion protocol over WebSerial, so it needs Chrome or Edge on desktop, and a radio running
@@ -56,6 +56,21 @@ also always carry the client-repeat flag, because the firmware turns repeating o
 **sync clock** (Overview, a banner when the radio is over a minute behind, or `/synctime` in the shell) sets the radio's
 clock from the computer. The firmware only moves its clock forward, so a clock that runs ahead can't be pulled back.
 
+## Channels
+
+The Channels tab lists the radio's slots (40 on current firmware) and adds, renames and removes channels with
+`CMD_SET_CHANNEL`. The radio saves every write to flash. Four ways to add one:
+
+- **Hashtag**: the key is the first 16 bytes of SHA-256 of the name, so anyone who knows the name can read it.
+- **New private**: a random key, with a `meshcore://channel/add?name=…&secret=…` link to share (the format the MeshCore
+  app and its QR codes use).
+- **From a link or key**: a `meshcore://` link, or a key as 32 hex characters or base64.
+- **Public**: the well-known key every radio ships with.
+
+Names are at most 31 bytes, and the firmware only takes 16-byte keys. **share** on any row copies its link. Messages files
+channel posts by slot number, so a new channel goes in a free slot with no stored messages when there is one. In the
+Packets tab, a channel the console can read but the radio can't has an **add to radio** button.
+
 ## Packets
 
 The radio pushes every packet it hears (`PUSH_CODE_LOG_RX_DATA`) before it parses or decrypts it, so the Packets tab
@@ -95,6 +110,7 @@ src/protocol/      companion protocol, no UI or browser dependencies
   messages.ts      typed parsers and command builders, one per reply layout
   packets.ts       over-the-air packets decoded field by field, for the analyzer
   crypto.ts        channel keys and hashes, AES-128-ECB + truncated HMAC
+  channels.ts      meshcore:// channel links, shared keys in hex or base64
   client.ts        request queue matching replies by code, push routing
   transports/      WebSerial, and a simulated radio for demo mode and tests
 src/console/       shell line editing and the CLI command catalog
