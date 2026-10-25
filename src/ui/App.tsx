@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isWebSerialSupported } from '../protocol/transports/webserial.ts'
 import { MessagesView } from './MessagesView.tsx'
+import { PacketsView } from './PacketsView.tsx'
 import { Button } from './parts.tsx'
 import { Shell, type ShellHandle } from './Shell.tsx'
+import { useChannelKeys } from './useChannelKeys.ts'
 import { useMessages } from './useMessages.ts'
+import { useAnalyzedPackets } from './usePackets.ts'
 import { useRadio } from './useRadio.ts'
-import { Channels, Contacts, driftText, Overview, Packets, Settings } from './views.tsx'
+import { Channels, Contacts, driftText, Overview, Settings } from './views.tsx'
 
 type Tab = 'overview' | 'messages' | 'settings' | 'contacts' | 'channels' | 'packets'
 
@@ -13,6 +16,8 @@ export function App() {
   const radio = useRadio()
   const { state } = radio
   const msgs = useMessages(radio.client, state.self?.publicKey, state.contacts, state.channels)
+  const channelKeys = useChannelKeys(state.channels)
+  const packets = useAnalyzedPackets(state, channelKeys.keys)
   const [clockDismissed, setClockDismissed] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
   const shell = useRef<ShellHandle>(null)
@@ -103,12 +108,12 @@ export function App() {
               <Button kind="small" onClick={radio.refreshStatus} disabled={!connected}>refresh</Button>
             </nav>
             <main className="view">
-              {tab === 'overview' && <Overview state={state} onSyncClock={radio.syncClock} />}
+              {tab === 'overview' && <Overview state={state} packets={packets} onSyncClock={radio.syncClock} />}
               {tab === 'messages' && <MessagesView msgs={msgs} connected={connected} nodeName={state.self?.name} />}
               {tab === 'settings' && <Settings state={state} write={radio.write} onRefresh={radio.refreshSettings} />}
               {tab === 'contacts' && <Contacts state={state} onRefresh={radio.refreshContacts} />}
               {tab === 'channels' && <Channels state={state} onRefresh={radio.refreshChannels} />}
-              {tab === 'packets' && <Packets state={state} onClear={radio.clearRx} />}
+              {tab === 'packets' && <PacketsView packets={packets} channelKeys={channelKeys} onClear={radio.clearRx} />}
             </main>
           </>
         )}

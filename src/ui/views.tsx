@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
-import { toHex } from '../protocol/bytes.ts'
 import type { MeshCoreClient } from '../protocol/client.ts'
-import { ADV_TYPE_NAMES, AutoAdd } from '../protocol/codes.ts'
+import { ADV_TYPE_NAMES, AutoAdd, PAYLOAD_TYPE_NAMES } from '../protocol/codes.ts'
 import type { OtherParams, RadioParams } from '../protocol/messages.ts'
 import { Button, Card, Empty, Rows, type EditSpec, type Row } from './parts.tsx'
+import type { AnalyzedPacket } from './usePackets.ts'
 import { CLI_SETTINGS, type RadioState } from './useRadio.ts'
 import { ago, batteryPercent, cliValue, coords, duration, shortKey, time } from './format.ts'
 
@@ -12,7 +12,7 @@ const TELEMETRY = ['deny', 'per contact', 'allow all']
 /** firmware: 0 = no limit, 1 = direct only, N = up to N-1 hops */
 const maxHopsText = (n: number) => (n === 0 ? 'no limit' : n === 1 ? 'direct only' : `${n - 1}`)
 
-export function Overview({ state, onSyncClock }: { state: RadioState; onSyncClock: () => Promise<void> }) {
+export function Overview({ state, packets, onSyncClock }: { state: RadioState; packets: AnalyzedPacket[]; onSyncClock: () => Promise<void> }) {
   const { self, batt, clock, core, radioStats: r, packets: p } = state
   const drift = clock ? Math.round(clock.radio - clock.local) : 0
   const [syncError, setSyncError] = useState<string>()
@@ -106,13 +106,13 @@ export function Overview({ state, onSyncClock }: { state: RadioState; onSyncCloc
         />
       </Card>
       <Card title="Recent packets">
-        {state.rx.length ? (
+        {packets.length ? (
           <ul className="mini-log">
-            {state.rx.slice(0, 6).map((e, i) => (
-              <li key={`${e.at}-${i}`}>
-                <span className="muted">{time(e.at)}</span> {e.packet?.payloadName ?? 'unparsed'}{' '}
+            {packets.slice(0, 6).map(({ e, a }) => (
+              <li key={e.id}>
+                <span className="muted">{time(e.at)}</span> {a.payloadType === undefined ? 'unparsed' : (PAYLOAD_TYPE_NAMES[a.payloadType] ?? `type ${a.payloadType}`)}{' '}
                 <span className="muted">
-                  {e.packet?.routeName} · {e.rssi} dBm · SNR {e.snr}
+                  {a.summary} · {e.rssi} dBm · SNR {e.snr}
                 </span>
               </li>
             ))}
@@ -537,36 +537,6 @@ export function Channels({ state, onRefresh }: { state: RadioState; onRefresh: (
         </table>
       ) : (
         <Empty>{state.channels ? 'No channels configured.' : 'Loading…'}</Empty>
-      )}
-    </Card>
-  )
-}
-
-export function Packets({ state, onClear }: { state: RadioState; onClear: () => void }) {
-  return (
-    <Card title={`Received packets (${state.rx.length})`} actions={<Button kind="small" onClick={onClear}>clear</Button>}>
-      {state.rx.length ? (
-        <table className="table">
-          <thead>
-            <tr><th>Time</th><th>Type</th><th>Route</th><th>Hops</th><th>Payload</th><th>RSSI</th><th>SNR</th><th>Raw</th></tr>
-          </thead>
-          <tbody>
-            {state.rx.map((e, i) => (
-              <tr key={`${e.at}-${i}`}>
-                <td className="muted">{time(e.at)}</td>
-                <td>{e.packet?.payloadName ?? 'unparsed'}</td>
-                <td>{e.packet?.routeName ?? ''}</td>
-                <td>{e.packet?.hops ?? ''}</td>
-                <td>{e.packet ? `${e.packet.payloadLength} B` : `${e.raw.length} B`}</td>
-                <td>{e.rssi} dBm</td>
-                <td>{e.snr} dB</td>
-                <td><code className="raw" title={toHex(e.raw)}>{toHex(e.raw).slice(0, 24)}…</code></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <Empty>The radio reports every packet it receives while the console is connected. Nothing yet.</Empty>
       )}
     </Card>
   )

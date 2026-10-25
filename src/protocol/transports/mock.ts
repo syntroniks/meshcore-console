@@ -1,13 +1,17 @@
 // A simulated companion radio, for demo mode and tests. Replies use the same layouts as firmware
 // v1.18.0, so the UI and parsers see what a real device would send.
 
+import { ed25519 } from '@noble/curves/ed25519.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { ByteReader, ByteWriter, fromHex, toHex } from '../bytes.ts'
-import { AdvType, Cmd, ErrCode, Push, Resp, StatsType, TxtType } from '../codes.ts'
+import { AdvType, Cmd, ErrCode, PayloadType, Push, Resp, StatsType, TxtType } from '../codes.ts'
+import { channelHash, encryptThenMac, hashtagSecret, PUBLIC_CHANNEL_SECRET } from '../crypto.ts'
 import { encodeFrame, FrameDecoder, TO_RADIO } from '../framing.ts'
 import type { Transport, TransportSink } from '../client.ts'
 
 interface MockContact {
   key: string
+  seed: Uint8Array // Ed25519 seed, so the contact's adverts carry real signatures
   name: string
   type: number
   pathLen: number
@@ -17,9 +21,24 @@ interface MockContact {
 }
 
 const DEMO_KEY = '3a7f1c9e5b2d8a4f6e0c1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a'
-const CHANNEL_NAMES = ['Public', '#austin']
+/** the radio's two slots; '#hiking' is only on the air, for the analyzer to find a key for */
+const CHANNELS = [
+  { name: 'Public', secret: fromHex(PUBLIC_CHANNEL_SECRET) },
+  { name: '#austin', secret: hashtagSecret('#austin') },
+]
+const OFF_RADIO_CHANNEL = hashtagSecret('#hiking')
 const CHATTER = ['anyone on 910.525 tonight?', 'testing from the hilltop', 'good copy, thanks', 'repeater looks healthy', 'heading out on the trail, will check in later']
 const CHANNEL_POSTERS = ['KJ5GFX Bill', 'Driftwood', 'Maya', 'Tom 🚲']
+
+function contact(name: string, type: number, pathLen: number, lat = 0, lon = 0): MockContact {
+  const seed = sha256(new TextEncoder().encode(`meshcore-console demo: ${name}`))
+  return { key: toHex(ed25519.getPublicKey(seed)), seed, name, type, pathLen, lastAdvert: 0, lat, lon }
+}
+
+function groupPayload(secret: Uint8Array, ts: number, text: string): Uint8Array {
+  const plain = new ByteWriter().u32(ts).u8(TxtType.Plain << 2).string(text).toBytes()
+  return new ByteWriter().u8(channelHash(secret)).bytes(encryptThenMac(secret, plain)).toBytes()
+}
 
 export interface MockOptions {
   /** emit a fake received-packet log every few seconds */
@@ -70,10 +89,10 @@ export class MockRadioTransport implements Transport {
     'tz.offset': '0',
   }
   private readonly contacts: MockContact[] = [
-    { key: 'a1'.repeat(32), name: 'Hilltop Repeater', type: AdvType.Repeater, pathLen: 0xff, lastAdvert: 0, lat: 30.2849, lon: -97.7341 },
-    { key: 'b2'.repeat(32), name: 'Downtown Room', type: AdvType.Room, pathLen: 2, lastAdvert: 0, lat: 0, lon: 0 },
-    { key: 'c3'.repeat(32), name: 'Alex 📡', type: AdvType.Chat, pathLen: 1, lastAdvert: 0, lat: 0, lon: 0 },
-    { key: 'd4'.repeat(32), name: 'Sam', type: AdvType.Chat, pathLen: 0xff, lastAdvert: 0, lat: 0, lon: 0 },
+    contact('Hilltop Repeater', AdvType.Repeater, 0xff, 30.2849, -97.7341),
+    contact('Downtown Room', AdvType.Room, 2),
+    contact('Alex 📡', AdvType.Chat, 1),
+    contact('Sam', AdvType.Chat, 0xff),
   ]
 
   constructor(options: MockOptions = {}) {
@@ -147,10 +166,12 @@ export class MockRadioTransport implements Transport {
     } else {
       const channel = Math.random() < 0.6 ? 0 : 1
       const poster = CHANNEL_POSTERS[Math.floor(Math.random() * CHANNEL_POSTERS.length)]
+      const hops = Math.floor(Math.random() * 4)
       this.queue.push(
-        new ByteWriter().u8(Resp.ChannelMsgRecvV3).u8(snr).u16(0).u8(channel).u8(Math.floor(Math.random() * 4))
+        new ByteWriter().u8(Resp.ChannelMsgRecvV3).u8(snr).u16(0).u8(channel).u8(hops)
           .u8(TxtType.Plain).u32(ts).string(`${poster}: ${text}`).toBytes(),
       )
+      if (notify && this.options.rxLog) this.hear(this.flood(PayloadType.GrpTxt, groupPayload(CHANNELS[channel].secret, ts, `${poster}: ${text}`), hops))
     }
     if (notify) this.send(Uint8Array.of(Push.MsgWaiting))
   }
@@ -162,16 +183,69 @@ export class MockRadioTransport implements Transport {
     )
   }
 
+  /** Background traffic: what a radio hears on a busy mesh, encrypted and signed like the real thing. */
   private receivePacket(): void {
+    const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)]
+    const roll = Math.random()
+    const two = () => {
+      const [a, b] = [...this.contacts].sort(() => Math.random() - 0.5)
+      return [fromHex(a.key)[0], fromHex(b.key)[0]]
+    }
+    const sealed = (n: number) => Uint8Array.from({ length: 2 + 16 * n }, () => Math.floor(Math.random() * 256))
+    let raw: Uint8Array
+    if (roll < 0.3) {
+      const off = Math.random() < 0.3
+      const secret = off ? OFF_RADIO_CHANNEL : pick(CHANNELS).secret
+      const text = off ? `${pick(['Tom 🚲', 'Rae'])}: ${pick(['trail is muddy past the creek', 'at the overlook, great signal up here'])}` : `${pick(CHANNEL_POSTERS)}: ${pick(CHATTER)}`
+      raw = this.flood(PayloadType.GrpTxt, groupPayload(secret, this.now() - Math.floor(Math.random() * 30), text))
+    } else if (roll < 0.5) {
+      raw = this.flood(PayloadType.Advert, this.advert(pick(this.contacts)))
+    } else if (roll < 0.62) {
+      raw = this.flood(PayloadType.TxtMsg, new ByteWriter().bytes(two()).bytes(sealed(1 + Math.floor(Math.random() * 3))).toBytes())
+    } else if (roll < 0.77) {
+      raw = this.flood(PayloadType.Ack, new ByteWriter().u32((Math.random() * 0xffffffff) >>> 0).toBytes())
+    } else if (roll < 0.84) {
+      raw = this.flood(PayloadType.Path, new ByteWriter().bytes(two()).bytes(sealed(1)).toBytes())
+    } else if (roll < 0.9) {
+      const snrs = Array.from({ length: 1 + Math.floor(Math.random() * 2) }, () => Math.round((Math.random() * 16 - 4) * 4) & 0xff)
+      const payload = new ByteWriter().u32((Math.random() * 0xffffffff) >>> 0).u32(0).u8(0).bytes(two()).toBytes()
+      raw = new ByteWriter().u8((PayloadType.Trace << 2) | 2).u8(snrs.length).bytes(snrs).bytes(payload).toBytes()
+    } else if (roll < 0.97) {
+      const c = this.contacts[0]
+      const payload = new ByteWriter().u8(0x90 | c.type).u8(Math.round(Math.random() * 40) & 0xff).u32((Math.random() * 0xffffffff) >>> 0)
+        .bytes(fromHex(c.key).slice(0, 8)).toBytes()
+      raw = new ByteWriter().u8((PayloadType.Control << 2) | 2).u8(0).bytes(payload).toBytes()
+    } else {
+      raw = new ByteWriter().u8((PayloadType.Advert << 2) | 1).u8(0).bytes(fromHex(pick(this.contacts).key)).toBytes() // cut short
+    }
+    this.hear(raw)
+    // flood packets get repeated: hear the same packet again, one hop further along
+    if (raw[0] === ((raw[0] & 0xfc) | 1) && raw[1] < 3 && Math.random() < 0.35) {
+      const again = Uint8Array.from([raw[0], raw[1] + 1, ...raw.subarray(2, 2 + raw[1]), fromHex(this.contacts[0].key)[0], ...raw.subarray(2 + raw[1])])
+      this.later(400 + Math.random() * 1400, () => this.hear(again))
+    }
+  }
+
+  private hear(raw: Uint8Array): void {
     this.received++
-    const types = [0x04, 0x05, 0x02, 0x03, 0x08] // advert, group text, text, ack, path
-    const header = (types[Math.floor(Math.random() * types.length)] << 2) | (Math.random() < 0.7 ? 1 : 2)
-    const hops = Math.floor(Math.random() * 4)
-    const body = Array.from({ length: hops + 20 + Math.floor(Math.random() * 60) }, () => Math.floor(Math.random() * 256))
-    const raw = new ByteWriter().u8(header).u8(hops).bytes(body).toBytes()
     const snr = Math.round((Math.random() * 20 - 8) * 4)
     const rssi = -60 - Math.floor(Math.random() * 60)
     this.send(new ByteWriter().u8(Push.LogRxData).u8(snr).u8(rssi).bytes(raw).toBytes())
+  }
+
+  /** a flood packet that came through 0-2 repeaters */
+  private flood(type: number, payload: Uint8Array, hops = Math.floor(Math.random() * 3)): Uint8Array {
+    const path = Array.from({ length: hops }, (_, i) => (i === hops - 1 ? fromHex(this.contacts[0].key)[0] : Math.floor(Math.random() * 256)))
+    return new ByteWriter().u8((type << 2) | 1).u8(hops).bytes(path).bytes(payload).toBytes()
+  }
+
+  private advert(c: MockContact): Uint8Array {
+    const app = new ByteWriter().u8(c.type | (c.lat || c.lon ? 0x10 : 0) | 0x80)
+    if (c.lat || c.lon) app.u32(Math.round(c.lat * 1e6)).u32(Math.round(c.lon * 1e6))
+    const appData = app.string(c.name).toBytes().slice(0, 32)
+    const signed = new ByteWriter().bytes(fromHex(c.key)).u32(this.now()).toBytes()
+    const signature = ed25519.sign(new Uint8Array([...signed, ...appData]), c.seed)
+    return new ByteWriter().bytes(signed).bytes(signature).bytes(appData).toBytes()
   }
 
   // ---- commands ----
@@ -221,8 +295,7 @@ export class MockRadioTransport implements Transport {
         const idx = cmd[1]
         if (idx >= 40) return this.err(ErrCode.NotFound)
         const ch = w().u8(Resp.ChannelInfo).u8(idx)
-        if (idx === 0) ch.fixedString(CHANNEL_NAMES[0], 32).bytes(fromHex('8b3387e9c5cdea6ac9e5edbaa115cd72'))
-        else if (idx === 1) ch.fixedString(CHANNEL_NAMES[1], 32).bytes(fromHex('d1c4a3b2f0e9d8c7b6a5948372615041'))
+        if (idx < CHANNELS.length) ch.fixedString(CHANNELS[idx].name, 32).bytes(CHANNELS[idx].secret)
         else ch.fixedString('', 32).bytes(new Uint8Array(16))
         return this.send(ch.toBytes())
       }
@@ -232,9 +305,16 @@ export class MockRadioTransport implements Transport {
       }
       case Cmd.SendTxtMsg:
         return this.sendTxt(r)
-      case Cmd.SendChannelTxtMsg:
+      case Cmd.SendChannelTxtMsg: {
         r.u8() // txt type
-        return r.u8() < CHANNEL_NAMES.length ? this.ok() : this.err(ErrCode.NotFound)
+        const idx = r.u8()
+        const ts = r.u32()
+        const text = `${this.name}: ${r.restString()}`
+        if (idx >= CHANNELS.length) return this.err(ErrCode.NotFound)
+        // a repeater sends the post back out, so the radio hears its own packet
+        if (this.options.rxLog) this.later(900, () => this.hear(this.flood(PayloadType.GrpTxt, groupPayload(CHANNELS[idx].secret, ts, text), 1)))
+        return this.ok()
+      }
       case Cmd.GetCustomVars:
         return this.send(w().u8(Resp.CustomVars).string(`gps:${this.gps}`).toBytes())
       case Cmd.SetCustomVar: {

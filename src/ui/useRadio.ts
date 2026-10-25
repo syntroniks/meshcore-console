@@ -36,6 +36,7 @@ export type Status = 'disconnected' | 'connecting' | 'connected'
 
 export interface RxEvent extends RxLogEntry {
   at: number
+  id: number // stable for the session, for keys and selection
 }
 
 export interface RadioState {
@@ -70,6 +71,7 @@ const initial: RadioState = { status: 'disconnected', cli: {}, rx: [] }
 export function useRadio() {
   const [state, setState] = useState<RadioState>(initial)
   const clientRef = useRef<MeshCoreClient | null>(null)
+  const rxSeq = useRef(0)
   const [client, setClient] = useState<MeshCoreClient | null>(null)
 
   const patch = useCallback((p: Partial<RadioState>) => setState((s) => ({ ...s, ...p })), [])
@@ -147,7 +149,7 @@ export function useRadio() {
         c = new MeshCoreClient(await makeTransport())
         c.on('push', (f) => {
           if (f[0] === Push.LogRxData) {
-            const entry: RxEvent = { ...parseRxLog(f), at: Date.now() }
+            const entry: RxEvent = { ...parseRxLog(f), at: Date.now(), id: ++rxSeq.current }
             setState((s) => ({ ...s, rx: [entry, ...s.rx].slice(0, RX_LOG_MAX) }))
           } else if (CONTACT_PUSHES.has(f[0])) {
             void refreshContacts().catch(() => {})
