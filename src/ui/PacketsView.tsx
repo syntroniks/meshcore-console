@@ -4,6 +4,7 @@ import { PAYLOAD_TYPE_NAMES, ROUTE_TYPE_NAMES } from '../protocol/codes.ts'
 import type { ChannelKey } from '../protocol/crypto.ts'
 import { splitChannelText } from '../protocol/messages.ts'
 import type { Field, PacketAnalysis, PacketDetail } from '../protocol/packets.ts'
+import type { ChannelEditor } from './ChannelsView.tsx'
 import { ago, time } from './format.ts'
 import { Button, Card, Empty } from './parts.tsx'
 import type { ChannelKeys } from './useChannelKeys.ts'
@@ -23,7 +24,12 @@ function keyStatus(key: ChannelKey | undefined): { text: string; ok: boolean } {
   return { text: 'hashtag, not on the radio: console only', ok: false }
 }
 
-export function PacketsView({ packets, channelKeys, onClear }: { packets: AnalyzedPacket[]; channelKeys: ChannelKeys; onClear: () => void }) {
+export function PacketsView({ packets, channelKeys, editor, onClear }: {
+  packets: AnalyzedPacket[]
+  channelKeys: ChannelKeys
+  editor: ChannelEditor
+  onClear: () => void
+}) {
   const [frozen, setFrozen] = useState<AnalyzedPacket[] | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [type, setType] = useState('all')
@@ -61,7 +67,7 @@ export function PacketsView({ packets, channelKeys, onClear }: { packets: Analyz
 
   return (
     <div className="stack">
-      <ChannelsHeard packets={list} channelKeys={channelKeys} active={channel} onPick={(h) => setChannel(channel === h ? null : h)} />
+      <ChannelsHeard packets={list} channelKeys={channelKeys} editor={editor} active={channel} onPick={(h) => setChannel(channel === h ? null : h)} />
       <Card title={`Received packets (${packets.length})`}>
         <div className="pkt-toolbar">
           <select className="filter" value={type} onChange={(e) => setType(e.target.value)}>
@@ -156,9 +162,10 @@ interface HeardChannel {
   last: number
 }
 
-function ChannelsHeard({ packets, channelKeys, active, onPick }: {
+function ChannelsHeard({ packets, channelKeys, editor, active, onPick }: {
   packets: AnalyzedPacket[]
   channelKeys: ChannelKeys
+  editor: ChannelEditor
   active: number | null
   onPick: (hash: number) => void
 }) {
@@ -201,7 +208,10 @@ function ChannelsHeard({ packets, channelKeys, active, onPick }: {
                   <td><code>{hex2(h.hash)}</code></td>
                   <td>{h.posts.size}</td>
                   <td className="muted">{ago(h.last / 1000)}</td>
-                  <td className={status.ok ? undefined : 'warn-text'}>{status.text}</td>
+                  <td>
+                    <span className={status.ok ? undefined : 'warn-text'}>{status.text}</span>
+                    {h.key && h.key.source !== 'radio' && <AddToRadio channel={h.key} editor={editor} />}
+                  </td>
                 </tr>
               )
             })}
@@ -229,6 +239,33 @@ function ChannelsHeard({ packets, channelKeys, active, onPick }: {
         ))}
       </div>
     </Card>
+  )
+}
+
+/** One click from a console-only key to a radio slot, after which the radio delivers the channel to Messages. */
+function AddToRadio({ channel, editor }: { channel: ChannelKey; editor: ChannelEditor }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string>()
+  if (!editor.connected) return null
+  const add = async (e: React.MouseEvent) => {
+    e.stopPropagation() // the row itself filters by channel
+    setBusy(true)
+    setError(undefined)
+    try {
+      await editor.add(channel.name, channel.secret)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <span className="add-to-radio">
+      <button className="btn btn-small" onClick={(e) => void add(e)} disabled={busy || editor.nextSlot === undefined} title={editor.nextSlot === undefined ? 'every slot is in use' : `add to slot ${editor.nextSlot}`}>
+        {busy ? 'adding…' : 'add to radio'}
+      </button>
+      {error && <span className="editor-error">{error}</span>}
+    </span>
   )
 }
 

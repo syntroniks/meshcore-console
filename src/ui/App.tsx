@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isWebSerialSupported } from '../protocol/transports/webserial.ts'
+import { ChannelsView, useChannelEditor } from './ChannelsView.tsx'
 import { MessagesView } from './MessagesView.tsx'
 import { PacketsView } from './PacketsView.tsx'
 import { Button } from './parts.tsx'
@@ -8,7 +9,7 @@ import { useChannelKeys } from './useChannelKeys.ts'
 import { useMessages } from './useMessages.ts'
 import { useAnalyzedPackets } from './usePackets.ts'
 import { useRadio } from './useRadio.ts'
-import { Channels, Contacts, driftText, Overview, Settings } from './views.tsx'
+import { Contacts, driftText, Overview, Settings } from './views.tsx'
 
 type Tab = 'overview' | 'messages' | 'settings' | 'contacts' | 'channels' | 'packets'
 
@@ -18,6 +19,12 @@ export function App() {
   const msgs = useMessages(radio.client, state.self?.publicKey, state.contacts, state.channels)
   const channelKeys = useChannelKeys(state.channels)
   const packets = useAnalyzedPackets(state, channelKeys.keys)
+  // free slots that still hold stored messages, which Messages files by slot
+  const busySlots = useMemo(
+    () => new Set(msgs.conversations.filter((c) => c.id.startsWith('ch:') && c.last).map((c) => Number(c.id.slice(3)))),
+    [msgs.conversations],
+  )
+  const channelEditor = useChannelEditor(state, radio.writeChannels, busySlots)
   const [clockDismissed, setClockDismissed] = useState(false)
   const [tab, setTab] = useState<Tab>('overview')
   const shell = useRef<ShellHandle>(null)
@@ -112,8 +119,8 @@ export function App() {
               {tab === 'messages' && <MessagesView msgs={msgs} connected={connected} nodeName={state.self?.name} />}
               {tab === 'settings' && <Settings state={state} write={radio.write} onRefresh={radio.refreshSettings} />}
               {tab === 'contacts' && <Contacts state={state} onRefresh={radio.refreshContacts} />}
-              {tab === 'channels' && <Channels state={state} onRefresh={radio.refreshChannels} />}
-              {tab === 'packets' && <PacketsView packets={packets} channelKeys={channelKeys} onClear={radio.clearRx} />}
+              {tab === 'channels' && <ChannelsView state={state} editor={channelEditor} onRefresh={radio.refreshChannels} />}
+              {tab === 'packets' && <PacketsView packets={packets} channelKeys={channelKeys} editor={channelEditor} onClear={radio.clearRx} />}
             </main>
           </>
         )}

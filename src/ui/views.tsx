@@ -508,36 +508,3 @@ export function Contacts({ state, onRefresh }: { state: RadioState; onRefresh: (
   )
 }
 
-export function Channels({ state, onRefresh }: { state: RadioState; onRefresh: () => void }) {
-  const [reveal, setReveal] = useState(false)
-  return (
-    <Card
-      title={`Channels${state.channels ? ` (${state.channels.length})` : ''}`}
-      actions={
-        <>
-          <Button kind="small" onClick={() => setReveal((r) => !r)}>{reveal ? 'hide keys' : 'show keys'}</Button>
-          <Button kind="small" onClick={onRefresh}>refresh</Button>
-        </>
-      }
-    >
-      {state.channels?.length ? (
-        <table className="table">
-          <thead>
-            <tr><th>#</th><th>Name</th><th>Secret</th></tr>
-          </thead>
-          <tbody>
-            {state.channels.map((c) => (
-              <tr key={c.index}>
-                <td>{c.index}</td>
-                <td>{c.name || <span className="muted">(unnamed)</span>}</td>
-                <td><code>{reveal ? c.secret : '•'.repeat(16)}</code></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <Empty>{state.channels ? 'No channels configured.' : 'Loading…'}</Empty>
-      )}
-    </Card>
-  )
-}

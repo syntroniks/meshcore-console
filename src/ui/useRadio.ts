@@ -140,6 +140,20 @@ export function useRadio() {
     patch({ channels: await c.getChannels(max) })
   }, [patch, state.device?.maxChannels])
 
+  /** Run a channel write, then re-read the slots so the UI shows what the radio stored. */
+  const writeChannels = useCallback(
+    async (fn: (c: MeshCoreClient) => Promise<unknown>) => {
+      const c = clientRef.current
+      if (!c?.isOpen) throw new Error('not connected')
+      try {
+        await fn(c)
+      } finally {
+        await refreshChannels()
+      }
+    },
+    [refreshChannels],
+  )
+
   const connect = useCallback(
     async (makeTransport: () => Promise<Transport>) => {
       if (clientRef.current?.isOpen) return
@@ -217,6 +231,7 @@ export function useRadio() {
     refreshSettings: run(refreshSettings),
     refreshChannels: run(refreshChannels),
     write,
+    writeChannels,
     syncClock,
   }
 }
