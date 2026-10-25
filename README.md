@@ -1,12 +1,12 @@
 # MeshCore Console
 
-A browser console for MeshCore companion radios over USB: messages (channels and direct), device status, editable
+A browser console for MeshCore companion radios over USB or Bluetooth: messages (channels and direct), device status, editable
 settings, contacts, channel management, a packet analyzer that decodes and decrypts what the radio hears, and a shell that runs
 commands on the radio's CLI.
 
-It talks the MeshCore companion protocol over WebSerial, so it needs Chrome or Edge on desktop, and a radio running
-companion firmware built for USB (for example `heltec_v4_companion_radio_usb`). The shell needs firmware v1.18 or newer
-(protocol v14, `CMD_RUN_CLI_COMMAND`).
+It talks the MeshCore companion protocol over WebSerial or Web Bluetooth, so it needs Chrome or Edge, and a radio
+running companion firmware built for USB or BLE (for example `heltec_v4_companion_radio_usb` or
+`heltec_v4_companion_radio_ble`). The shell needs firmware v1.18 or newer (protocol v14, `CMD_RUN_CLI_COMMAND`).
 
 ## Running it
 
@@ -17,7 +17,8 @@ pnpm install
 pnpm dev          # http://localhost:5173, hot reload
 ```
 
-Click **Connect USB** and pick the radio's serial port, or **Demo radio** to try it without hardware.
+Click **Connect USB** and pick the radio's serial port, **Connect Bluetooth** and pick the radio, or **Demo radio** to
+try it without hardware.
 
 | Command | What it does |
 | --- | --- |
@@ -32,6 +33,24 @@ Click **Connect USB** and pick the radio's serial port, or **Demo radio** to try
 nothing; `--write-same` exercises every write command without changing a setting (the clock moves forward 1 s). It
 never syncs messages, since that takes them off the radio. Only one program can hold the serial port, so disconnect the
 browser first.
+
+## Bluetooth
+
+BLE firmware serves the Nordic UART service: the console writes each frame to one characteristic and the radio notifies
+each reply on the other, with no serial framing. Both need an encrypted, authenticated link, so the first connection
+pairs with the radio's 6-digit PIN: the one on its screen (a new random PIN each boot), or 123456 on a radio without
+one, unless a fixed PIN is set under Settings. The console pairs before sending its first command, so the PIN prompt
+can't run into a request timeout. After that the computer remembers the radio.
+
+- **Windows**: Chrome asks for the PIN itself. **macOS** and **Android** ask in a system dialog.
+- **Linux**: Chrome needs `chrome://flags/#enable-web-bluetooth`, and it can't enter a passkey (Chromium answers BlueZ's
+  passkey request with a cancel). Pair the radio once in the system's Bluetooth settings, or with `bluetoothctl`
+  (`scan on`, `pair <address>`, then `disconnect <address>` so it advertises again), then connect from the console.
+- The radio takes one Bluetooth connection at a time and stops advertising while it has one, so disconnect the
+  MeshCore phone app first.
+- If the link drops, **Reconnect** connects to the same radio again without the chooser.
+- If the radio was erased or reflashed, the computer's stored pairing no longer matches: remove the radio from the
+  system's Bluetooth devices and pair again.
 
 ## Messages
 
@@ -112,7 +131,7 @@ src/protocol/      companion protocol, no UI or browser dependencies
   crypto.ts        channel keys and hashes, AES-128-ECB + truncated HMAC
   channels.ts      meshcore:// channel links, shared keys in hex or base64
   client.ts        request queue matching replies by code, push routing
-  transports/      WebSerial, and a simulated radio for demo mode and tests
+  transports/      WebSerial, Web Bluetooth, and a simulated radio for demo mode and tests
 src/console/       shell line editing and the CLI command catalog
 src/ui/            React views, the connection hook, and the xterm shell
 scripts/           Node tools (node-serialport transport, probe)
