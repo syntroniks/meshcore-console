@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { isWebBluetoothSupported, pairsInBrowser } from '../protocol/transports/webbluetooth.ts'
 import { isWebSerialSupported } from '../protocol/transports/webserial.ts'
 import { ChannelsView, useChannelEditor } from './ChannelsView.tsx'
 import { MessagesView } from './MessagesView.tsx'
@@ -31,6 +32,8 @@ export function App() {
   const [dockHeight, setDockHeight] = useState(300)
   const connected = state.status === 'connected'
   const webSerial = isWebSerialSupported()
+  const webBluetooth = isWebBluetoothSupported()
+  const connecting = state.status === 'connecting'
   const drift = state.clock ? Math.round(state.clock.radio - state.clock.local) : 0
 
   useEffect(() => {
@@ -75,10 +78,18 @@ export function App() {
           <Button onClick={() => void radio.disconnect()}>Disconnect</Button>
         ) : (
           <>
-            <Button kind="primary" onClick={() => void radio.connectSerial()} disabled={!webSerial || state.status === 'connecting'} title={webSerial ? 'Pick the radio’s USB serial port' : 'WebSerial needs Chrome or Edge on desktop'}>
+            <Button kind="primary" onClick={() => void radio.connectSerial()} disabled={!webSerial || connecting} title={webSerial ? 'Pick the radio’s USB serial port' : 'WebSerial needs Chrome or Edge on desktop'}>
               Connect USB
             </Button>
-            <Button onClick={() => void radio.connectDemo()} disabled={state.status === 'connecting'}>
+            <Button onClick={() => void radio.connectBluetooth()} disabled={!webBluetooth || connecting} title={webBluetooth ? 'Pick the radio and pair with its PIN' : 'Web Bluetooth needs Chrome or Edge'}>
+              Connect Bluetooth
+            </Button>
+            {radio.bleName && (
+              <Button onClick={() => void radio.reconnectBluetooth()} disabled={connecting} title="Connect to the same radio again, without the chooser">
+                Reconnect {radio.bleName}
+              </Button>
+            )}
+            <Button onClick={() => void radio.connectDemo()} disabled={connecting}>
               Demo radio
             </Button>
           </>
@@ -101,7 +112,7 @@ export function App() {
 
       <div className="workspace">
         {state.status === 'disconnected' && !state.device ? (
-          <Welcome webSerial={webSerial} onConnect={() => void radio.connectSerial()} onDemo={() => void radio.connectDemo()} />
+          <Welcome webSerial={webSerial} webBluetooth={webBluetooth} onSerial={() => void radio.connectSerial()} onBluetooth={() => void radio.connectBluetooth()} onDemo={() => void radio.connectDemo()} />
         ) : (
           <>
             <nav className="tabs">
@@ -137,17 +148,44 @@ export function App() {
   )
 }
 
-function Welcome({ webSerial, onConnect, onDemo }: { webSerial: boolean; onConnect: () => void; onDemo: () => void }) {
+function Welcome({ webSerial, webBluetooth, onSerial, onBluetooth, onDemo }: { webSerial: boolean; webBluetooth: boolean; onSerial: () => void; onBluetooth: () => void; onDemo: () => void }) {
+  const linux = !pairsInBrowser()
   return (
     <div className="welcome">
       <h1>Connect a MeshCore companion radio</h1>
       <p className="muted">
-        Plug the radio in over USB and pick its serial port. It needs companion firmware built for USB
+        <strong>USB:</strong> plug the radio in and pick its serial port. It needs companion firmware built for USB
         (eg. <code>heltec_v4_companion_radio_usb</code>), v1.18 or newer for the shell.
       </p>
+      <p className="muted">
+        <strong>Bluetooth:</strong> pick the radio, then pair with its PIN: the one on its screen, or <code>123456</code> if
+        it has no screen, unless you set your own under Settings. It needs firmware built for BLE
+        (eg. <code>heltec_v4_companion_radio_ble</code>). The radio takes one Bluetooth connection at a time, so disconnect
+        the MeshCore phone app first.
+      </p>
       {!webSerial && <p className="banner banner-error">This browser has no WebSerial. Use Chrome or Edge on desktop.</p>}
+      {!webBluetooth && (
+        <p className="banner banner-error">
+          <span>
+            This browser has no Web Bluetooth. Use Chrome or Edge{linux && <>; on Linux, turn on <code>chrome://flags/#enable-web-bluetooth</code> first</>}.
+          </span>
+        </p>
+      )}
+      {linux && (
+        <div className="banner">
+          <div>
+            Chrome on Linux can’t enter a Bluetooth PIN. Pair the radio once in the system’s Bluetooth settings, or
+            with <code>bluetoothctl</code>, then connect here:
+            <pre className="welcome-pre">{`bluetoothctl
+scan on                # wait for MeshCore-… and note its address
+pair AA:BB:CC:DD:EE:FF # enter the PIN when asked
+disconnect AA:BB:CC:DD:EE:FF`}</pre>
+          </div>
+        </div>
+      )}
       <div className="welcome-actions">
-        <Button kind="primary" onClick={onConnect} disabled={!webSerial}>Connect USB</Button>
+        <Button kind="primary" onClick={onSerial} disabled={!webSerial}>Connect USB</Button>
+        <Button kind="primary" onClick={onBluetooth} disabled={!webBluetooth}>Connect Bluetooth</Button>
         <Button onClick={onDemo}>Try the demo radio</Button>
       </div>
     </div>

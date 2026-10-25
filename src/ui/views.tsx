@@ -436,11 +436,11 @@ export function Settings({ state, write, onRefresh }: { state: RadioState; write
             { label: 'Capacity', value: d ? `${d.maxContacts} contacts, ${d.maxChannels} channels` : '…' },
             {
               label: 'BLE PIN',
-              value: d ? (d.blePin ? String(d.blePin).padStart(6, '0') : 'random each boot') : '…',
+              value: d ? (d.blePin ? String(d.blePin).padStart(6, '0') : 'default: random on screen each boot, or 123456 without a screen') : '…',
               edit: d && {
                 type: 'text',
                 value: d.blePin ? String(d.blePin) : '0',
-                hint: 'six digits, or 0 for a random PIN shown on screen each boot; used by BLE builds after a reboot',
+                hint: 'six digits, or 0 for the default; BLE builds use it after a reboot, and a computer already paired keeps working',
                 validate: (v) => (/^(0|[1-9]\d{5})$/.test(v.trim()) ? undefined : 'six digits (not starting with 0), or 0'),
                 save: (v) => write((c) => c.setDevicePin(Number(v.trim()))),
               },

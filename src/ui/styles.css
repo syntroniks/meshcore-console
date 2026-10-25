@@ -82,6 +82,7 @@ code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px
 .welcome { max-width: 620px; margin: 8vh auto; padding: 0 20px; }
 .welcome h1 { font-size: 22px; font-weight: 600; }
 .welcome-actions { display: flex; gap: 10px; margin-top: 18px; }
+.welcome-pre { margin: 8px 0 0; padding: 8px 10px; border-radius: 4px; background: rgba(0, 0, 0, 0.25); font-size: 12px; white-space: pre; overflow-x: auto; }
 
 .dock { display: flex; flex-direction: column; border-top: 1px solid var(--border); background: #0b0e12; min-height: 120px; }
 .dock-handle { display: flex; gap: 12px; align-items: center; padding: 4px 12px; cursor: ns-resize; user-select: none; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; }

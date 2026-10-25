@@ -19,9 +19,14 @@ export class WebSerialTransport implements Transport {
         : 'serial port'
   }
 
-  /** Ask the user to pick a port. Must be called from a click handler. */
-  static async request(): Promise<WebSerialTransport> {
-    return new WebSerialTransport(await navigator.serial.requestPort())
+  /** Ask the user to pick a port; null if they close the chooser. Must be called from a click handler. */
+  static async request(): Promise<WebSerialTransport | null> {
+    try {
+      return new WebSerialTransport(await navigator.serial.requestPort())
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'NotFoundError') return null // no port selected
+      throw err
+    }
   }
 
   /** A port the user already granted on an earlier visit, if any. */

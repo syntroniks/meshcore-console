@@ -17,6 +17,7 @@ import {
   type TuningParams,
 } from '../protocol/messages.ts'
 import { MockRadioTransport } from '../protocol/transports/mock.ts'
+import { WebBluetoothTransport } from '../protocol/transports/webbluetooth.ts'
 import { WebSerialTransport } from '../protocol/transports/webserial.ts'
 
 /** Settings the binary protocol can't read, fetched with CLI 'get' commands. */
@@ -73,6 +74,9 @@ export function useRadio() {
   const clientRef = useRef<MeshCoreClient | null>(null)
   const rxSeq = useRef(0)
   const [client, setClient] = useState<MeshCoreClient | null>(null)
+  // the last radio picked in the Bluetooth chooser, so a dropped link can come back without it
+  const bleDevice = useRef<BluetoothDevice | null>(null)
+  const [bleName, setBleName] = useState<string>()
 
   const patch = useCallback((p: Partial<RadioState>) => setState((s) => ({ ...s, ...p })), [])
 
@@ -155,12 +159,17 @@ export function useRadio() {
   )
 
   const connect = useCallback(
-    async (makeTransport: () => Promise<Transport>) => {
+    async (makeTransport: () => Promise<Transport | null>) => {
       if (clientRef.current?.isOpen) return
-      patch({ ...initial, status: 'connecting' })
+      patch({ ...initial, error: undefined, status: 'connecting' }) // drop a stale 'connection lost'
       let c: MeshCoreClient | null = null
       try {
-        c = new MeshCoreClient(await makeTransport())
+        const transport = await makeTransport()
+        if (!transport) {
+          patch({ status: 'disconnected' }) // the chooser was closed
+          return
+        }
+        c = new MeshCoreClient(transport)
         c.on('push', (f) => {
           if (f[0] === Push.LogRxData) {
             const entry: RxEvent = { ...parseRxLog(f), at: Date.now(), id: ++rxSeq.current }
@@ -199,6 +208,22 @@ export function useRadio() {
   )
 
   const connectSerial = useCallback(() => connect(() => WebSerialTransport.request()), [connect])
+  const connectBluetooth = useCallback(
+    () =>
+      connect(async () => {
+        const t = await WebBluetoothTransport.request()
+        if (t) {
+          bleDevice.current = t.device
+          setBleName(t.name)
+        }
+        return t
+      }),
+    [connect],
+  )
+  const reconnectBluetooth = useCallback(
+    () => connect(async () => (bleDevice.current ? new WebBluetoothTransport(bleDevice.current) : null)),
+    [connect],
+  )
   const connectDemo = useCallback(() => connect(async () => new MockRadioTransport({ rxLog: true, chatter: true, queuedMessages: 3, clockBehindSecs: 7200 })), [connect])
 
   const disconnect = useCallback(async () => {
@@ -222,6 +247,9 @@ export function useRadio() {
     state,
     client,
     connectSerial,
+    connectBluetooth,
+    reconnectBluetooth,
+    bleName,
     connectDemo,
     disconnect,
     clearError: () => patch({ error: undefined }),
