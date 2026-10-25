@@ -1,7 +1,8 @@
 # MeshCore Console
 
 A browser console for MeshCore companion radios over USB: messages (channels and direct), device status, editable
-settings, contacts, channels, a live log of received packets, and a shell that runs commands on the radio's CLI.
+settings, contacts, channels, a packet analyzer that decodes and decrypts what the radio hears, and a shell that runs
+commands on the radio's CLI.
 
 It talks the MeshCore companion protocol over WebSerial, so it needs Chrome or Edge on desktop, and a radio running
 companion firmware built for USB (for example `heltec_v4_companion_radio_usb`). The shell needs firmware v1.18 or newer
@@ -55,6 +56,29 @@ also always carry the client-repeat flag, because the firmware turns repeating o
 **sync clock** (Overview, a banner when the radio is over a minute behind, or `/synctime` in the shell) sets the radio's
 clock from the computer. The firmware only moves its clock forward, so a clock that runs ahead can't be pulled back.
 
+## Packets
+
+The radio pushes every packet it hears (`PUSH_CODE_LOG_RX_DATA`) before it parses or decrypts it, so the Packets tab
+sees all traffic in range: posts on channels the radio has no key for, and packets it will drop. Click a row to see the
+packet field by field, with its bytes coloured to match.
+
+- **Channel posts** are decrypted with every key the console has: the radio's channel slots, the well-known Public key,
+  and hashtag names typed in under **Channels heard** (a hashtag channel's key is the first 16 bytes of SHA-256 of its
+  name, `#` included; names are kept in localStorage). Channels heard lists each channel hash with its post count, and
+  says whether the radio itself delivers those posts to Messages. The firmware skips a slot that has a key but no name,
+  and a key only the console knows is console-only.
+- **Adverts** have their Ed25519 signatures checked, as the firmware does before it accepts one.
+- **Repeats**: copies of one packet heard through different repeaters share a packet hash. **Heard** counts them, and
+  **hide repeats** keeps one row per packet.
+- **Malformed packets** say what the firmware does with them.
+- Direct messages, requests and responses stay encrypted. Opening them needs the pair's shared secret, and so a private
+  key.
+
+The radio only pushes packets that fit its 176-byte frame after a 3-byte header, so packets over 173 bytes never reach
+the console. The crypto follows `src/Utils.cpp`: AES-128-ECB with zero padding, then a 2-byte truncated HMAC-SHA256.
+`test/packets.test.ts` checks it, the packet hash, framing, advert app data and signatures against vectors generated
+from the v1.18.0 C++ (taken from [meshcore-go](https://github.com/meshrunner-dev/meshcore-go), MIT).
+
 ## Shell
 
 Anything typed goes to the radio's CLI as-is (`get tx`, `set name …`, `ver`, `reboot`). Commands starting with `/` run
@@ -69,6 +93,8 @@ src/protocol/      companion protocol, no UI or browser dependencies
   codes.ts         command, response and push codes (from firmware v1.18.0)
   framing.ts       '<'/'>' length-prefixed serial frames
   messages.ts      typed parsers and command builders, one per reply layout
+  packets.ts       over-the-air packets decoded field by field, for the analyzer
+  crypto.ts        channel keys and hashes, AES-128-ECB + truncated HMAC
   client.ts        request queue matching replies by code, push routing
   transports/      WebSerial, and a simulated radio for demo mode and tests
 src/console/       shell line editing and the CLI command catalog
