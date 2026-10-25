@@ -152,6 +152,26 @@ export const MAX_TEXT_LEN = 160
 /** Size of the firmware's frame buffer (BaseSerialInterface.h). */
 export const MAX_FRAME_SIZE = 176
 
+/** Over-the-air packet limits (MeshCore.h). */
+export const MAX_PACKET_PAYLOAD = 184
+export const MAX_PATH_SIZE = 64
+
+export const PayloadType = {
+  Req: 0x00,
+  Response: 0x01,
+  TxtMsg: 0x02,
+  Ack: 0x03,
+  Advert: 0x04,
+  GrpTxt: 0x05,
+  GrpData: 0x06,
+  AnonReq: 0x07,
+  Path: 0x08,
+  Trace: 0x09,
+  Multipart: 0x0a,
+  Control: 0x0b,
+  RawCustom: 0x0f,
+} as const
+
 export const ROUTE_TYPE_NAMES = ['transport-flood', 'flood', 'direct', 'transport-direct'] as const
 
 export const PAYLOAD_TYPE_NAMES: Record<number, string> = {
