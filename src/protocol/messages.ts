@@ -462,4 +462,7 @@ export const commands = {
   setAutoaddConfig: (c: AutoaddConfig) => Uint8Array.of(Cmd.SetAutoaddConfig, c.flags, c.maxHops),
   setPathHashMode: (mode: number) => Uint8Array.of(Cmd.SetPathHashMode, 0, mode),
   setCustomVar: (name: string, value: string) => new ByteWriter().u8(Cmd.SetCustomVar).string(`${name}:${value}`).toBytes(),
+  /** The firmware only takes 16-byte keys here; a 32-byte one is refused as unsupported. */
+  setChannel: (index: number, name: string, secret: Uint8Array) =>
+    new ByteWriter().u8(Cmd.SetChannel).u8(index).fixedString(name, 32).bytes(secret).toBytes(),
 }

@@ -1,7 +1,8 @@
 // Frames here are built field by field in the firmware's memcpy order (MyMesh.cpp, v1.18.0).
 
 import { describe, expect, it } from 'vitest'
-import { ByteReader, ByteWriter, fromHex } from '../src/protocol/bytes.ts'
+import { ByteReader, ByteWriter, fromHex, toHex } from '../src/protocol/bytes.ts'
+import { channelLink, parseChannelLink, parseSecret } from '../src/protocol/channels.ts'
 import { Push, Resp, TxtType } from '../src/protocol/codes.ts'
 import {
   commands,
@@ -218,5 +219,25 @@ describe('write commands', () => {
 
   it('sets the path hash mode with its leading zero byte', () => {
     expect([...commands.setPathHashMode(2)]).toEqual([61, 0, 2])
+  })
+
+  it('writes a channel slot as index, NUL-padded 32-byte name, 16-byte key', () => {
+    const f = commands.setChannel(3, '#hiking', fromHex('2370a013053e384e5f18918bc2b26baf'))
+    expect(f.length).toBe(2 + 32 + 16)
+    expect([f[0], f[1]]).toEqual([32, 3])
+    expect(new ByteReader(f, 2).fixedString(32)).toBe('#hiking')
+    expect(toHex(f.slice(34))).toBe('2370a013053e384e5f18918bc2b26baf')
+  })
+
+  it('reads shared channel keys: meshcore:// links, hex and base64', () => {
+    const pub = '8b3387e9c5cdea6ac9e5edbaa115cd72'
+    expect(toHex(parseSecret('izOH6cXN6mrJ5e26oRXNcg==')!)).toBe(pub)
+    expect(toHex(parseSecret(pub.toUpperCase())!)).toBe(pub)
+    expect(parseSecret('00'.repeat(16))).toBeNull()
+    expect(parseSecret('8b3387')).toBeNull()
+    const link = channelLink('Trail crew', fromHex(pub))
+    expect(link).toBe(`meshcore://channel/add?name=Trail+crew&secret=${pub}`)
+    expect(parseChannelLink(link)).toEqual({ name: 'Trail crew', secret: fromHex(pub) })
+    expect(parseChannelLink('meshcore://contact/add?name=x&public_key=00')).toBeNull()
   })
 })

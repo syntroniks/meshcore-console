@@ -4,6 +4,7 @@
 // sends pushes (0x80+) whenever it likes. So requests run one at a time, and each one names the reply
 // codes it is waiting for. Anything else that arrives meanwhile is reported as unsolicited.
 
+import { MAX_CHANNEL_NAME_BYTES, nameBytes } from './channels.ts'
 import { ERR_CODE_NAMES, ErrCode, Push, Resp, StatsType } from './codes.ts'
 import { encodeFrame, FrameDecoder } from './framing.ts'
 import {
@@ -406,6 +407,18 @@ export class MeshCoreClient {
 
   setCustomVar(name: string, value: string): Promise<void> {
     return this.ok('set custom var', commands.setCustomVar(name, value))
+  }
+
+  /** Writes a channel slot, which the radio saves to flash. The name must fit 31 UTF-8 bytes; keys are 16 bytes. */
+  setChannel(index: number, name: string, secret: Uint8Array): Promise<void> {
+    if (nameBytes(name) > MAX_CHANNEL_NAME_BYTES) return Promise.reject(new Error(`channel names are at most ${MAX_CHANNEL_NAME_BYTES} bytes`))
+    if (secret.length !== 16) return Promise.reject(new Error('channel keys are 16 bytes'))
+    return this.ok('set channel', commands.setChannel(index, name, secret))
+  }
+
+  /** Empties a slot: no name and an all-zero key, which the radio treats as unused. */
+  removeChannel(index: number): Promise<void> {
+    return this.setChannel(index, '', new Uint8Array(16))
   }
 
   /** Run a CLI 'set' (or other) command that should answer "OK…"; throws with the radio's reply otherwise. */

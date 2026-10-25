@@ -75,6 +75,8 @@ export class MockRadioTransport implements Transport {
   private tuning = { rx: 0, af: 1 }
   private other = { manualAdd: 0, telemetry: 0, advLoc: 0, multiAcks: 0 }
   private autoadd = { flags: 0, maxHops: 0 }
+  /** the radio's 40 channel slots; an empty one has no name and an all-zero key */
+  private readonly slots: { name: string; secret: Uint8Array }[] = Array.from({ length: 40 }, (_, i) => ({ name: CHANNELS[i]?.name ?? '', secret: CHANNELS[i]?.secret.slice() ?? new Uint8Array(16) }))
   private pathHashMode = 0
   private gps = '0'
   private cli: Record<string, string> = {
@@ -164,16 +166,25 @@ export class MockRadioTransport implements Transport {
       const from = this.contacts[2]
       this.queueDirect(from, text, ts, snr)
     } else {
-      const channel = Math.random() < 0.6 ? 0 : 1
-      const poster = CHANNEL_POSTERS[Math.floor(Math.random() * CHANNEL_POSTERS.length)]
+      const named = this.slots.filter((slot) => slot.name)
+      if (!named.length) return
+      const { secret } = named[Math.floor(Math.random() * named.length)]
+      const post = `${CHANNEL_POSTERS[Math.floor(Math.random() * CHANNEL_POSTERS.length)]}: ${text}`
       const hops = Math.floor(Math.random() * 4)
-      this.queue.push(
-        new ByteWriter().u8(Resp.ChannelMsgRecvV3).u8(snr).u16(0).u8(channel).u8(hops)
-          .u8(TxtType.Plain).u32(ts).string(`${poster}: ${text}`).toBytes(),
-      )
-      if (notify && this.options.rxLog) this.hear(this.flood(PayloadType.GrpTxt, groupPayload(CHANNELS[channel].secret, ts, `${poster}: ${text}`), hops))
+      this.deliverGroup(secret, ts, post, hops, snr)
+      if (notify && this.options.rxLog) this.hear(this.flood(PayloadType.GrpTxt, groupPayload(secret, ts, post), hops))
     }
     if (notify) this.send(Uint8Array.of(Push.MsgWaiting))
+  }
+
+  /** What the firmware does with a channel post it can open: queue it under the first named slot with that key. */
+  private deliverGroup(secret: Uint8Array, ts: number, text: string, hops: number, snr: number): boolean {
+    const idx = this.slots.findIndex((slot) => slot.name && toHex(slot.secret) === toHex(secret))
+    if (idx < 0) return false
+    this.queue.push(
+      new ByteWriter().u8(Resp.ChannelMsgRecvV3).u8(snr).u16(0).u8(idx).u8(hops).u8(TxtType.Plain).u32(ts).string(text).toBytes(),
+    )
+    return true
   }
 
   private queueDirect(from: MockContact, text: string, ts: number, snr: number): void {
@@ -197,7 +208,13 @@ export class MockRadioTransport implements Transport {
       const off = Math.random() < 0.3
       const secret = off ? OFF_RADIO_CHANNEL : pick(CHANNELS).secret
       const text = off ? `${pick(['Tom 🚲', 'Rae'])}: ${pick(['trail is muddy past the creek', 'at the overlook, great signal up here'])}` : `${pick(CHANNEL_POSTERS)}: ${pick(CHATTER)}`
-      raw = this.flood(PayloadType.GrpTxt, groupPayload(secret, this.now() - Math.floor(Math.random() * 30), text))
+      const ts = this.now() - Math.floor(Math.random() * 30)
+      const hops = Math.floor(Math.random() * 3)
+      raw = this.flood(PayloadType.GrpTxt, groupPayload(secret, ts, text), hops)
+      // posts on a channel the radio has a named slot for also reach the app
+      if (this.options.chatter && this.deliverGroup(secret, ts, text, hops, Math.round((Math.random() * 16 - 4) * 4))) {
+        this.later(50, () => this.send(Uint8Array.of(Push.MsgWaiting)))
+      }
     } else if (roll < 0.5) {
       raw = this.flood(PayloadType.Advert, this.advert(pick(this.contacts)))
     } else if (roll < 0.62) {
@@ -294,10 +311,15 @@ export class MockRadioTransport implements Transport {
       case Cmd.GetChannel: {
         const idx = cmd[1]
         if (idx >= 40) return this.err(ErrCode.NotFound)
-        const ch = w().u8(Resp.ChannelInfo).u8(idx)
-        if (idx < CHANNELS.length) ch.fixedString(CHANNELS[idx].name, 32).bytes(CHANNELS[idx].secret)
-        else ch.fixedString('', 32).bytes(new Uint8Array(16))
-        return this.send(ch.toBytes())
+        return this.send(w().u8(Resp.ChannelInfo).u8(idx).fixedString(this.slots[idx].name, 32).bytes(this.slots[idx].secret).toBytes())
+      }
+      case Cmd.SetChannel: {
+        if (cmd.length >= 2 + 32 + 32) return this.err(ErrCode.UnsupportedCmd) // 256-bit keys: not supported (yet)
+        if (cmd.length < 2 + 32 + 16) return this.err(ErrCode.UnsupportedCmd)
+        const idx = r.u8()
+        if (idx >= this.slots.length) return this.err(ErrCode.NotFound)
+        this.slots[idx] = { name: r.fixedString(32).slice(0, 31), secret: r.take(16) }
+        return this.ok()
       }
       case Cmd.SyncNextMessage: {
         const next = this.queue.shift()
@@ -310,9 +332,10 @@ export class MockRadioTransport implements Transport {
         const idx = r.u8()
         const ts = r.u32()
         const text = `${this.name}: ${r.restString()}`
-        if (idx >= CHANNELS.length) return this.err(ErrCode.NotFound)
+        const slot = this.slots[idx]
+        if (!slot?.name) return this.err(ErrCode.NotFound)
         // a repeater sends the post back out, so the radio hears its own packet
-        if (this.options.rxLog) this.later(900, () => this.hear(this.flood(PayloadType.GrpTxt, groupPayload(CHANNELS[idx].secret, ts, text), 1)))
+        if (this.options.rxLog) this.later(900, () => this.hear(this.flood(PayloadType.GrpTxt, groupPayload(slot.secret, ts, text), 1)))
         return this.ok()
       }
       case Cmd.GetCustomVars:

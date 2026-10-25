@@ -169,6 +169,19 @@ describe('messages and writes against the mock radio', () => {
     await client.disconnect()
   })
 
+  it('writes and empties a channel slot', async () => {
+    const client = new MeshCoreClient(new MockRadioTransport())
+    await client.connect()
+    const key = Uint8Array.from({ length: 16 }, (_, i) => i + 1)
+    await client.setChannel(5, '#hiking', key)
+    expect(await client.getChannel(5)).toEqual({ index: 5, name: '#hiking', secret: '0102030405060708090a0b0c0d0e0f10' })
+    await client.removeChannel(5)
+    expect(await client.getChannel(5)).toEqual({ index: 5, name: '', secret: '00'.repeat(16) })
+    await expect(client.setChannel(40, 'x', key)).rejects.toMatchObject({ code: ErrCode.NotFound })
+    await expect(client.setChannel(2, 'x'.repeat(32), key)).rejects.toThrow('at most 31 bytes')
+    await client.disconnect()
+  })
+
   it('treats a CLI reply other than OK as a failed write', async () => {
     const client = new MeshCoreClient(new MockRadioTransport())
     await client.connect()
