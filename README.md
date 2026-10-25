@@ -9,6 +9,8 @@ companion firmware built for USB (for example `heltec_v4_companion_radio_usb`). 
 
 ## Running it
 
+The latest `main` is published at <https://syntroniks.github.io/meshcore-console/>. To run it locally:
+
 ```sh
 pnpm install
 pnpm dev          # http://localhost:5173, hot reload
