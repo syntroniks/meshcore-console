@@ -247,8 +247,23 @@ export class MeshCoreClient {
 
   // ---- queries -----------------------------------------------------------------------------------
 
-  async deviceQuery(appVersion = APP_PROTOCOL_VERSION): Promise<DeviceInfo> {
-    return parseDeviceInfo(await this.one('device query', commands.deviceQuery(appVersion), Resp.DeviceInfo))
+  async deviceQuery(appVersion = APP_PROTOCOL_VERSION, timeoutMs?: number): Promise<DeviceInfo> {
+    return parseDeviceInfo(await this.one('device query', commands.deviceQuery(appVersion), Resp.DeviceInfo, timeoutMs))
+  }
+
+  /**
+   * Device query, retried until the radio answers. Opening the port can reset an ESP32-S3, and the
+   * firmware then needs several seconds to boot (about 8 s on a Heltec V4 with BLE and WiFi built in).
+   */
+  async waitForDevice(totalMs = 15000, attemptMs = 1000): Promise<DeviceInfo> {
+    const deadline = Date.now() + totalMs
+    for (;;) {
+      try {
+        return await this.deviceQuery(APP_PROTOCOL_VERSION, attemptMs)
+      } catch (err) {
+        if (!(err instanceof TimeoutError) || Date.now() >= deadline) throw err
+      }
+    }
   }
 
   async appStart(appName = 'meshcore-console'): Promise<SelfInfo> {

@@ -186,7 +186,7 @@ export function useRadio() {
         await c.connect()
         clientRef.current = c
         setClient(c)
-        const device = await c.deviceQuery()
+        const device = await c.waitForDevice()
         const self = await c.appStart()
         patch({ status: 'connected', label: c.label, device, self })
         await refreshStatus()

@@ -105,6 +105,41 @@ describe('MeshCoreClient reply handling', () => {
     expect(await next).toBe(2)
   })
 
+  it('keeps querying until a radio that reset on port open has booted', async () => {
+    vi.useFakeTimers()
+    // Ignores commands while "booting", like an ESP32-S3 printing its ROM banner after a reset.
+    class BootingRadio extends MockRadioTransport {
+      booted = false
+      ignored = 0
+      override async write(data: Uint8Array) {
+        if (!this.booted) {
+          this.ignored++
+          return
+        }
+        return super.write(data)
+      }
+    }
+    const t = new BootingRadio()
+    const client = new MeshCoreClient(t)
+    await client.connect()
+    const device = client.waitForDevice(15000, 1000)
+    await vi.advanceTimersByTimeAsync(2500)
+    t.booted = true
+    await vi.advanceTimersByTimeAsync(1000)
+    expect((await device).protocolVersion).toBeGreaterThan(0)
+    expect(t.ignored).toBe(3)
+  })
+
+  it('gives up waiting for the radio after the total timeout', async () => {
+    vi.useFakeTimers()
+    const client = new MeshCoreClient(new ScriptedTransport())
+    await client.connect()
+    const device = client.waitForDevice(3000, 1000)
+    const failed = expect(device).rejects.toThrow('device query')
+    await vi.advanceTimersByTimeAsync(4001)
+    await failed
+  })
+
   it('fails pending requests when the transport closes', async () => {
     const t = new ScriptedTransport()
     const client = new MeshCoreClient(t)
